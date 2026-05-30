@@ -1,0 +1,13 @@
+# Copy this file to application-local.yaml in the project root.
+# application-local.yaml is ignored by Git, so every developer can keep their own DB/Redis settings.
+
+spring:
+  datasource:
+    url: jdbc:mysql://127.0.0.1:3306/enpense_system?useSSL=false&serverTimezone=UTC&characterEncoding=utf8
+    username: root
+    password: 123456
+  data:
+    redis:
+      host: 127.0.0.1
+      port: 6379
+      password: 123456
