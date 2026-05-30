@@ -24,10 +24,6 @@ CREATE TABLE IF NOT EXISTS fk_reim_main (
   reim_department_no VARCHAR(64) DEFAULT NULL COMMENT '报销部门编号',
   reim_department_name VARCHAR(100) NOT NULL COMMENT '报销部门名称',
 
-  reim_company_id VARCHAR(64) NOT NULL COMMENT '费用归属公司ID，前端写死选项的ID',
-  reim_company_no VARCHAR(64) DEFAULT NULL COMMENT '费用归属公司编号',
-  reim_company_name VARCHAR(100) NOT NULL COMMENT '费用归属公司名称',
-
   business_type_id VARCHAR(64) NOT NULL COMMENT '业务类型ID，前端写死选项的ID',
   business_type_no VARCHAR(64) DEFAULT NULL COMMENT '业务类型编号',
   business_type_name VARCHAR(100) NOT NULL COMMENT '业务类型名称',
@@ -145,12 +141,13 @@ CREATE TABLE IF NOT EXISTS fk_reim_allocation (
   id BIGINT NOT NULL AUTO_INCREMENT COMMENT '主键ID',
   main_id BIGINT NOT NULL COMMENT '报销单主表ID',
 
-  expense_owner_id VARCHAR(64) NOT NULL COMMENT '费用归属ID，前端写死选项的ID',
-  expense_owner_name VARCHAR(100) NOT NULL COMMENT '费用归属名称',
+  allocation_owner_type VARCHAR(32) NOT NULL COMMENT '分摊归属方类型：COMPANY公司，DEPARTMENT部门',
+  allocation_owner_id VARCHAR(64) NOT NULL COMMENT '分摊归属方ID，前端写死选项的ID',
+  allocation_owner_no VARCHAR(64) DEFAULT NULL COMMENT '分摊归属方编号',
+  allocation_owner_name VARCHAR(100) NOT NULL COMMENT '分摊归属方名称，如公司名称或部门名称',
 
-  project_id VARCHAR(64) DEFAULT NULL COMMENT '项目ID，前端写死选项的ID',
-  project_no VARCHAR(64) DEFAULT NULL COMMENT '项目编号',
-  project_name VARCHAR(100) DEFAULT NULL COMMENT '项目名称',
+  business_id VARCHAR(64) DEFAULT NULL COMMENT '分摊业务ID，前端写死选项的ID',
+  business_name VARCHAR(100) DEFAULT NULL COMMENT '分摊业务名称',
 
   allocation_ratio DECIMAL(10,6) NOT NULL DEFAULT 0.000000 COMMENT '分摊比例，数据库存 0-1，页面展示为百分比',
   allocation_amount DECIMAL(12,2) NOT NULL DEFAULT 0.00 COMMENT '分摊金额',
@@ -161,8 +158,8 @@ CREATE TABLE IF NOT EXISTS fk_reim_allocation (
 
   PRIMARY KEY (id),
   KEY idx_fk_reim_allocation_main_id (main_id),
-  KEY idx_fk_reim_allocation_owner (expense_owner_id),
-  KEY idx_fk_reim_allocation_project (project_id)
+  KEY idx_fk_reim_allocation_owner (allocation_owner_type, allocation_owner_id),
+  KEY idx_fk_reim_allocation_business (business_id)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci COMMENT='费用归属及分摊表';
 
 -- 城市补助标准初始化数据，来自概要设计 5.3.5 城市控件数据和 5.2.2.4 补助规则。
