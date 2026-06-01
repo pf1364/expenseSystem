@@ -23,6 +23,7 @@ CREATE TABLE IF NOT EXISTS fk_reim_main (
   reim_department_id VARCHAR(64) NOT NULL COMMENT '报销部门ID，前端写死选项的ID',
   reim_department_no VARCHAR(64) DEFAULT NULL COMMENT '报销部门编号',
   reim_department_name VARCHAR(100) NOT NULL COMMENT '报销部门名称',
+  reim_company_names VARCHAR(500) DEFAULT NULL COMMENT '费用归属公司名称汇总，来自分摊表公司类型归属方，多个用逗号拼接',
 
   business_type_id VARCHAR(64) NOT NULL COMMENT '业务类型ID，前端写死选项的ID',
   business_type_no VARCHAR(64) DEFAULT NULL COMMENT '业务类型编号',

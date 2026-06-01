@@ -25,6 +25,7 @@ public class FkReimMain {
     private String reimDepartmentId; // 报销部门ID
     private String reimDepartmentNo; // 报销部门编号
     private String reimDepartmentName; // 报销部门名称
+    private String reimCompanyNames; // 费用归属公司名称汇总，来自分摊表公司类型归属方
     private String businessTypeId; // 业务类型ID
     private String businessTypeNo; // 业务类型编号
     private String businessTypeName; // 业务类型名称
