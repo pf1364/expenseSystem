@@ -5,18 +5,23 @@ import lombok.Data;
 @Data
 public class ReimbursementPageQuery {
 
-    private Integer pageNum = 1; // 当前页
-    private Integer pageSize = 10; // 每页条数
-    private String reimNo; // 报销单号，模糊查询
-    private String title; // 报销标题，模糊查询
-    private String reason; // 报销事由，模糊查询
-    private String reimCompanyName; // 费用归属公司名称，查询主表缓存字段
-    private String reimDepartmentName; // 报销部门名称，精确查询
-    private String reimburserKeyword; // 报销人姓名或工号，精确查询
-    private String businessTypeName; // 业务类型名称，精确查询
+    private Integer pageNum = 1;
+    private Integer pageNo;
+    private Integer pageSize = 10;
+    private String reimNo;
+    private String title;
+    private String reason;
+    private String reimCompanyName;
+    private String reimDepartmentName;
+    private String reimburserKeyword;
+    private String reimburserName;
+    private String reimburserNo;
+    private String businessTypeName;
+    private String billStatus;
 
     public Integer getPageNum() {
-        return pageNum == null || pageNum < 1 ? 1 : pageNum;
+        Integer current = pageNo == null ? pageNum : pageNo;
+        return current == null || current < 1 ? 1 : current;
     }
 
     public Integer getPageSize() {

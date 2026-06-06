@@ -1,6 +1,10 @@
 # Build output
 target/
 *.class
+frontend/node_modules/
+frontend/dist/
+frontend/vite-dev.log
+backend-dev.log
 
 # IDE files
 .idea/
