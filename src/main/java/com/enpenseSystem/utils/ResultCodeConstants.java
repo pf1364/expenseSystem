@@ -1,7 +1,11 @@
 package com.enpenseSystem.utils;
 
+/**
+ * 统一响应业务码及默认提示。
+ */
 public final class ResultCodeConstants {
 
+    /** 工具常量类不允许实例化。 */
     private ResultCodeConstants() {
     }
 

@@ -9,6 +9,12 @@ import java.math.BigDecimal;
 import java.time.LocalDate;
 import java.time.LocalDateTime;
 
+/**
+ * 每日补助明细实体，对应数据库表 fk_reim_allowance_day。
+ *
+ * <p>每条记录表示某段行程中的一天，同时保存城市标准快照、
+ * 用户勾选状态、实报金额和后端计算的当日合计。</p>
+ */
 @Data
 @TableName("fk_reim_allowance_day")
 public class FkReimAllowanceDay {

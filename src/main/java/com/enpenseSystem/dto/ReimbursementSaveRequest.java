@@ -6,6 +6,12 @@ import java.math.BigDecimal;
 import java.time.LocalDate;
 import java.util.List;
 
+/**
+ * 报销单创建和更新的完整请求对象。
+ *
+ * <p>包含主表基础信息、行程、每日补助和费用分摊。客户端传入的补助标准、
+ * 当日合计、主表总额等金额结果不可信，Service 会查询数据库标准并重新计算。</p>
+ */
 @Data
 public class ReimbursementSaveRequest {
 
@@ -26,6 +32,7 @@ public class ReimbursementSaveRequest {
     private List<ItineraryRequest> itineraries; // 行程信息
     private List<AllocationRequest> allocations; // 费用归属及分摊信息
 
+    /** 单条行程请求，包含该行程对应的每日补助明细。 */
     @Data
     public static class ItineraryRequest {
 
@@ -45,6 +52,7 @@ public class ReimbursementSaveRequest {
         private List<AllowanceDayRequest> allowanceDays; // 当前行程对应的每日补助明细
     }
 
+    /** 单日补助请求，记录三类补助的勾选状态和实报金额。 */
     @Data
     public static class AllowanceDayRequest {
 
@@ -66,6 +74,7 @@ public class ReimbursementSaveRequest {
         private BigDecimal dayAmount; // 当日补助合计
     }
 
+    /** 单条费用归属及分摊请求。 */
     @Data
     public static class AllocationRequest {
 

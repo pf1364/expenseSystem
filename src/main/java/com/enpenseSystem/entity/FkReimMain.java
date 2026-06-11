@@ -8,6 +8,12 @@ import lombok.Data;
 import java.math.BigDecimal;
 import java.time.LocalDateTime;
 
+/**
+ * 报销单主表实体，对应数据库表 fk_reim_main。
+ *
+ * <p>保存单据基础信息、状态和金额汇总。行程、每日补助和费用分摊
+ * 分别存放在子表中，通过本实体的 id 关联。</p>
+ */
 @Data
 @TableName("fk_reim_main")
 public class FkReimMain {
