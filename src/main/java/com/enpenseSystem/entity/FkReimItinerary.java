@@ -8,6 +8,11 @@ import lombok.Data;
 import java.time.LocalDate;
 import java.time.LocalDateTime;
 
+/**
+ * 报销单行程实体，对应数据库表 fk_reim_itinerary。
+ *
+ * <p>一张报销单可以包含多条行程；一条行程又可以包含多条每日补助。</p>
+ */
 @Data
 @TableName("fk_reim_itinerary")
 public class FkReimItinerary {

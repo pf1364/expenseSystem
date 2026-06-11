@@ -8,6 +8,12 @@ import lombok.Data;
 import java.math.BigDecimal;
 import java.time.LocalDateTime;
 
+/**
+ * 城市补助标准实体，对应数据库表 fk_city_allowance。
+ *
+ * <p>该表是餐补、交通补助和通讯补助上限的权威数据来源，
+ * 客户端传入的标准值不能替代本表数据。</p>
+ */
 @Data
 @TableName("fk_city_allowance")
 public class FkCityAllowance {

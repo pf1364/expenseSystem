@@ -145,6 +145,8 @@ import { billStatuses, businessTypeTree, companies, departments, employees, find
 import { copyReimbursement, deleteDraft, pageReimbursements } from '../api/reimbursement'
 
 const router = useRouter()
+
+// 列表数据及加载状态。
 const loading = ref(false)
 const records = ref([])
 const total = ref(0)
@@ -156,6 +158,8 @@ const businessTypeProps = {
   children: 'children',
   emitPath: false
 }
+
+// 查询对象字段与后端 ReimbursementPageQuery 保持一致。
 const query = reactive({
   pageNum: 1,
   pageSize: 10,
@@ -169,6 +173,7 @@ const query = reactive({
   billStatus: ''
 })
 
+/** 按当前页和每页条数计算跨页连续序号。 */
 function rowNo(index) {
   return (query.pageNum - 1) * query.pageSize + index + 1
 }
@@ -183,16 +188,19 @@ function withNo(name, no) {
 }
 
 function selectEmployee(id) {
+  // 下拉保存员工 ID，发给后端的查询值使用姓名。
   const employee = employees.find(item => item.id === id)
   query.reimburserKeyword = employee ? employee.name : ''
 }
 
 function selectBusinessType(id) {
+  // 级联选择器保存叶子 ID，后端当前按业务类型名称精确查询。
   const business = findBusinessType(id)
   query.businessTypeName = business ? business.name : ''
 }
 
 async function load() {
+  // 查询期间显示表格 loading，无论成功失败都在 finally 中关闭。
   loading.value = true
   try {
     const data = await pageReimbursements(query)
@@ -204,6 +212,7 @@ async function load() {
 }
 
 function reset() {
+  // 同时清空控件选择值和真正发送给后端的查询对象。
   selectedEmployeeId.value = ''
   selectedBusinessTypeId.value = ''
   Object.assign(query, {
@@ -226,6 +235,7 @@ function open(reimNo) {
 }
 
 async function handleMore(command, row) {
+  // 下拉菜单命令在此统一分发，手工推送目前为禁用占位项。
   if (command === 'delete') {
     await remove(row.reimNo)
   }
@@ -235,6 +245,7 @@ async function handleMore(command, row) {
 }
 
 async function remove(reimNo) {
+  // 删除是不可恢复操作，必须经过二次确认。
   await ElMessageBox.confirm('确认删除该草稿单据？', '删除确认', { type: 'warning' })
   await deleteDraft(reimNo)
   ElMessage.success('删除成功')
@@ -242,12 +253,14 @@ async function remove(reimNo) {
 }
 
 async function copy(reimNo) {
+  // 后端会生成新单号并把复制结果固定为草稿。
   await ElMessageBox.confirm('确认复制该报销单并生成新的草稿单？', '复制确认', { type: 'info' })
   const data = await copyReimbursement(reimNo)
   ElMessage.success(`复制成功，新单号：${data.reimNo}`)
   load()
 }
 
+// 页面首次进入时自动加载第一页数据。
 onMounted(load)
 </script>
 

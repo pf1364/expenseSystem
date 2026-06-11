@@ -68,6 +68,7 @@ const pieRef = ref()
 let barChart
 let pieChart
 
+// 与后端 PersonalStatisticsVO 对应的响应式统计数据。
 const stats = reactive({
   totalCount: 0,
   draftCount: 0,
@@ -83,14 +84,17 @@ function money(value) {
 }
 
 async function load() {
+  // 姓名和工号同时传递，避免同名人员的统计结果混在一起。
   const employee = employees.find(item => item.name === selectedName.value)
   const data = await personalStatistics({ reimburserName: selectedName.value, reimburserNo: employee?.no })
   Object.assign(stats, data)
+  // 等待 Vue 完成 DOM 更新，确保图表容器已经具备尺寸。
   await nextTick()
   renderCharts()
 }
 
 function renderCharts() {
+  // 图表实例只初始化一次，后续查询只更新 option。
   barChart ||= echarts.init(barRef.value)
   pieChart ||= echarts.init(pieRef.value)
   const months = (stats.monthlyAmounts || []).map(item => item.month)
@@ -117,6 +121,7 @@ function renderCharts() {
 }
 
 function resizeCharts() {
+  // 容器尺寸变化时通知 ECharts 重新计算画布。
   barChart?.resize()
   pieChart?.resize()
 }
@@ -127,6 +132,7 @@ onMounted(() => {
 })
 
 onBeforeUnmount(() => {
+  // 页面离开时移除事件并释放 Canvas，避免内存泄漏。
   window.removeEventListener('resize', resizeCharts)
   barChart?.dispose()
   pieChart?.dispose()

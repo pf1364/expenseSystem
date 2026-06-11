@@ -356,13 +356,19 @@ const props = defineProps({
 })
 
 const router = useRouter()
+
+// 城市标准由后端加载；人员、部门、公司和业务类型按训练营要求使用前端固定选项。
 const cities = ref([])
 const selectedCompanyId = ref('')
+
+// 五个业务分区分别维护展开/折叠状态。
 const basicExpanded = ref(true)
 const itineraryExpanded = ref(true)
 const allowanceExpanded = ref(true)
 const totalExpanded = ref(true)
 const allocationExpanded = ref(true)
+
+// form 是新增、编辑、保存和提交共同使用的页面数据源。
 const form = reactive(emptyForm())
 const today = new Date().toLocaleDateString('zh-CN')
 const allowanceTip = '1、请根据实际出差日期选择补助 2、出差期间当日有用餐安排的请自行核减当日餐补 3、出差期间当日有用车的，请自行核减当日交补'
@@ -382,7 +388,10 @@ const allowanceDialog = reactive({
   itinerary: null
 })
 
+// 已存在且状态不是草稿的报销单只允许查看。
 const readonly = computed(() => Boolean(form.reimNo && form.billStatus && form.billStatus !== 'DRAFT'))
+
+// 页面合计用于实时交互展示；最终金额仍由后端按城市标准重新校验和汇总。
 const allAllowanceDays = computed(() => form.itineraries.flatMap(item => item.allowanceDays || []))
 const totalAmount = computed(() => allAllowanceDays.value.reduce((sum, day) => sum + Number(day.dayAmount || 0), 0))
 const mealTotal = computed(() => allAllowanceDays.value.reduce((sum, day) => sum + Number(day.mealAmount || 0), 0))
@@ -391,6 +400,7 @@ const communicationTotal = computed(() => allAllowanceDays.value.reduce((sum, da
 const allocationRatioTotal = computed(() => form.allocations.reduce((sum, item) => sum + Number(item.allocationRatio || 0), 0))
 const allocationAmountTotal = computed(() => form.allocations.reduce((sum, item) => sum + Number(item.allocationAmount || 0), 0))
 
+// 通用分区组件统一处理标题、右侧操作按钮和折叠箭头。
 const FormSection = defineComponent({
   props: {
     title: String,
@@ -417,6 +427,7 @@ const FormSection = defineComponent({
   }
 })
 
+// 补助日历列头复选框，支持全选、取消和半选状态。
 const HeaderCheck = defineComponent({
   props: {
     label: String,
@@ -436,6 +447,7 @@ const HeaderCheck = defineComponent({
   }
 })
 
+// 单项补助输入控件：标准只读，用户只能取消或在标准范围内调低金额。
 const AllowanceInput = defineComponent({
   props: {
     row: Object,
@@ -480,6 +492,7 @@ const AllowanceInput = defineComponent({
   }
 })
 
+/** 创建新增页面使用的空报销单模型。 */
 function emptyForm() {
   return {
     reimNo: '',
@@ -501,6 +514,7 @@ function emptyForm() {
   }
 }
 
+/** 创建行程弹窗使用的空行程模型。 */
 function emptyItinerary() {
   return {
     localKey: '',
@@ -586,6 +600,7 @@ function selectDepartment(id) {
 }
 
 function selectBaseCompany(id) {
+  // 基础信息选择公司后，如果还没有分摊，则自动建立一条 100% 公司分摊。
   const company = companies.find(item => item.id === id)
   form.reimCompanyNames = company?.name || ''
   if (company && form.allocations.length === 0) {
@@ -607,6 +622,7 @@ function selectBusiness(id) {
 }
 
 function selectAllocationCompany(row, id) {
+  // 同时保存公司 ID、编号和名称，后端分摊表需要这些字段。
   const company = companies.find(item => item.id === id)
   row.allocationOwnerType = 'COMPANY'
   row.allocationOwnerNo = company?.no || ''
@@ -614,6 +630,7 @@ function selectAllocationCompany(row, id) {
 }
 
 function openItineraryDialog(row, index = -1) {
+  // 修改时深拷贝行程，取消弹窗不会污染列表中的原数据。
   itineraryDialog.index = index
   itineraryDialog.form = row ? JSON.parse(JSON.stringify(row)) : {
     ...emptyItinerary(),
@@ -626,6 +643,7 @@ function openItineraryDialog(row, index = -1) {
 }
 
 function copyItinerary(row) {
+  // 清空数据库主键后复制，保存时后端会把它识别为新行程和新补助明细。
   const copied = JSON.parse(JSON.stringify(row))
   delete copied.id
   copied.localKey = crypto.randomUUID()
@@ -664,6 +682,7 @@ function disabledFutureDate(date) {
 }
 
 async function saveItineraryDialog() {
+  // 完成必填校验后，根据目的地和日期生成对应的每日补助。
   const row = itineraryDialog.form
   if (!row.travelerId || !row.startCityName || !row.endCityName || !row.startDate || !row.endDate || !row.description) {
     ElMessage.warning('补录行程所有字段均为必填')
@@ -686,6 +705,7 @@ async function saveItineraryDialog() {
 }
 
 async function buildAllowanceDays(row) {
+  // 优先使用后端结果；后端会从数据库读取目的地城市补助标准。
   try {
     return await generateAllowanceDays({
       startCityCode: row.startCityCode,
@@ -702,6 +722,7 @@ async function buildAllowanceDays(row) {
 }
 
 function buildFallbackAllowanceDays(row, city) {
+  // 接口不可用时仅用于页面预览；保存时后端仍会重新校验标准和金额。
   const days = []
   const standard = city || fallbackCities[0]
   const start = new Date(row.startDate)
@@ -732,6 +753,7 @@ function buildFallbackAllowanceDays(row, city) {
 }
 
 function openAllowanceDialog(row) {
+  // 弹窗直接编辑当前行程的 allowanceDays，变更会实时影响费用合计。
   allowanceDialog.itinerary = row
   allowanceDialog.visible = true
 }
@@ -745,6 +767,7 @@ function selectedFields(type) {
 }
 
 function setItemSelected(row, type, value) {
+  // 勾选时保留原金额或恢复标准金额，取消时强制清零。
   const [selectedField, amountField, standardField] = selectedFields(type)
   row[selectedField] = value ? 1 : 0
   row[amountField] = value ? Number(row[amountField] || row[standardField] || 0) : 0
@@ -765,6 +788,7 @@ function isDayIndeterminate(row) {
 }
 
 function toggleDay(row, value) {
+  // 一次勾选或取消某一天的三种补助。
   setItemSelected(row, 'meal', value)
   setItemSelected(row, 'traffic', value)
   setItemSelected(row, 'communication', value)
@@ -788,6 +812,7 @@ function isTypeIndeterminate(type) {
 }
 
 function toggleType(type, value) {
+  // 一次勾选或取消所有日期中的同一种补助。
   ;(allowanceDialog.itinerary?.allowanceDays || []).forEach(day => setItemSelected(day, type, value))
 }
 
@@ -807,10 +832,12 @@ function isAllIndeterminate() {
 }
 
 function toggleAll(value) {
+  // 控制当前行程所有日期和所有补助项目。
   ;(allowanceDialog.itinerary?.allowanceDays || []).forEach(day => toggleDay(day, value))
 }
 
 function calcDay(row) {
+  // 未勾选项目按 0 计算，并同步当日合计及分摊金额。
   const meal = row.mealSelected === 1 ? Number(row.mealAmount || 0) : 0
   const traffic = row.trafficSelected === 1 ? Number(row.trafficAmount || 0) : 0
   const communication = row.communicationSelected === 1 ? Number(row.communicationAmount || 0) : 0
@@ -819,6 +846,7 @@ function calcDay(row) {
 }
 
 function addAllocation() {
+  // 新增行默认比例和金额为 0，首行随后根据其他行比例自动反算。
   form.allocations.push(newAllocation(null, 0))
   recalcAllocations()
 }
@@ -838,6 +866,7 @@ function newAllocation(company, ratio) {
 }
 
 function updateAllocationRatio(index, value) {
+  // 第一行不可编辑；第 2 行以后变化时，第一行承担剩余比例。
   if (index === 0) {
     recalcAllocations()
     return
@@ -852,6 +881,7 @@ function updateAllocationRatio(index, value) {
 }
 
 function recalcAllocations() {
+  // 首行作为差额行，保证页面展示比例合计为 100%。
   if (form.allocations.length === 0) {
     return
   }
@@ -869,6 +899,7 @@ function recalcAllocations() {
 }
 
 function splitAllocationsEvenly() {
+  // 以 0.01% 为最小单位均摊，除不尽的尾差放在第一行。
   const count = form.allocations.length
   if (count === 0) return
   const baseCents = Math.floor(10000 / count)
@@ -880,6 +911,7 @@ function splitAllocationsEvenly() {
 }
 
 function syncAllocationAmount(row) {
+  // 分摊金额由补助总额乘比例得到，页面不允许手工修改。
   row.allocationAmount = Number((totalAmount.value * Number(row.allocationRatio || 0) / 100).toFixed(2))
 }
 
@@ -888,6 +920,7 @@ function syncAllAllocationAmounts() {
 }
 
 async function removeAllocation(index) {
+  // 至少保留一条分摊信息，多行删除前进行二次确认。
   if (form.allocations.length <= 1) {
     ElMessage.warning('至少保留一条分摊信息')
     return
@@ -898,6 +931,7 @@ async function removeAllocation(index) {
 }
 
 function validateClient() {
+  // 前端校验用于及时提示，不能替代后端日期、城市和金额安全校验。
   if (!form.businessTypeId) {
     ElMessage.error('业务类型不能为空')
     return false
@@ -925,6 +959,7 @@ function validateClient() {
 }
 
 function payload() {
+  // 页面比例按百分数展示，发送前转换为后端和数据库使用的 0-1。
   const data = JSON.parse(JSON.stringify(form))
   data.allocations = (data.allocations || []).map(item => ({
     ...item,
@@ -935,6 +970,7 @@ function payload() {
 }
 
 async function saveDraft() {
+  // 新单据调用创建草稿；已有单据调用更新，成功后使用后端单号更新路由。
   if (!validateClient()) return
   recalcAllocations()
   const data = form.reimNo ? await updateReimbursement(form.reimNo, payload()) : await createDraft(payload())
@@ -947,6 +983,7 @@ async function saveDraft() {
 }
 
 async function submit() {
+  // 已有草稿先保存最新修改再提交；新单据直接创建并提交。
   if (!validateClient()) return
   recalcAllocations()
   if (form.reimNo) {
@@ -960,6 +997,7 @@ async function submit() {
 }
 
 async function loadDetail() {
+  // 加载详情，并把数据库 0-1 分摊比例转换回页面百分数。
   if (!props.reimNo) {
     return
   }
@@ -976,6 +1014,7 @@ async function loadDetail() {
 }
 
 onMounted(async () => {
+  // 先加载城市标准，再根据路由参数决定是否回显已有报销单。
   try {
     const remoteCities = await listCityAllowances()
     cities.value = remoteCities?.length ? remoteCities : fallbackCities

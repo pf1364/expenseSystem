@@ -8,6 +8,11 @@ import lombok.Data;
 import java.math.BigDecimal;
 import java.time.LocalDateTime;
 
+/**
+ * 费用归属及分摊实体，对应数据库表 fk_reim_allocation。
+ *
+ * <p>一张报销单可以按比例分摊给多个公司。比例在数据库中使用 0-1 表示。</p>
+ */
 @Data
 @TableName("fk_reim_allocation")
 public class FkReimAllocation {

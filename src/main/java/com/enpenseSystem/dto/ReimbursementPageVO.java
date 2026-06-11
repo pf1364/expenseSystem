@@ -5,6 +5,11 @@ import lombok.Data;
 import java.math.BigDecimal;
 import java.time.LocalDateTime;
 
+/**
+ * 报销单分页列表的单行返回对象。
+ *
+ * <p>只包含列表展示所需字段，不携带行程、每日补助和分摊明细。</p>
+ */
 @Data
 public class ReimbursementPageVO {
 
