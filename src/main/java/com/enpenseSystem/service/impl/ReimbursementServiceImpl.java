@@ -1,6 +1,7 @@
 package com.enpenseSystem.service.impl;
 
 import com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper;
+import com.baomidou.mybatisplus.core.conditions.update.LambdaUpdateWrapper;
 import com.baomidou.mybatisplus.extension.plugins.pagination.Page;
 import com.enpenseSystem.common.PageData;
 import com.enpenseSystem.dto.AllowanceGenerateRequest;
@@ -15,6 +16,8 @@ import com.enpenseSystem.entity.FkReimAllocation;
 import com.enpenseSystem.entity.FkReimAllowanceDay;
 import com.enpenseSystem.entity.FkReimItinerary;
 import com.enpenseSystem.entity.FkReimMain;
+import com.enpenseSystem.exception.ResourceNotFoundException;
+import com.enpenseSystem.exception.StatusConflictException;
 import com.enpenseSystem.service.FkCityAllowanceService;
 import com.enpenseSystem.service.FkReimAllocationService;
 import com.enpenseSystem.service.FkReimAllowanceDayService;
@@ -219,8 +222,9 @@ public class ReimbursementServiceImpl implements ReimbursementService {
     public ReimbursementSaveResponse update(String reimNo, ReimbursementSaveRequest request) {
         // 路径中的单号是更新目标，不能相信请求体中可能被篡改的 reimNo。
         FkReimMain main = getMainByReimNo(reimNo);
-        if (ReimbursementConstants.STATUS_VOIDED.equals(main.getBillStatus())) {
-            throw new IllegalArgumentException("已作废单据不能修改");
+        // 只有草稿状态可以修改，已提交或已作废的单据不允许编辑
+        if (!ReimbursementConstants.STATUS_DRAFT.equals(main.getBillStatus())) {
+            throw new StatusConflictException("只有草稿状态可以修改");
         }
         request.setReimNo(reimNo);
         // 保留数据库中的当前状态，更新接口不接受客户端自行修改状态。
@@ -239,20 +243,34 @@ public class ReimbursementServiceImpl implements ReimbursementService {
     @Override
     @Transactional(rollbackFor = Exception.class)
     public ReimbursementSaveResponse submitDraft(String reimNo) {
+        FkReimMain main = getMainByReimNo(reimNo);
+
+        // 只有草稿状态可以提交
+        if (!ReimbursementConstants.STATUS_DRAFT.equals(main.getBillStatus())) {
+            throw new StatusConflictException("只有草稿状态可以提交");
+        }
+
         // 详情 VO 中已经包含全部子表数据，将其转换为保存请求后可复用统一校验逻辑。
         ReimbursementDetailVO detail = detail(reimNo);
         ReimbursementSaveRequest request = toSaveRequest(detail);
         validateForSubmit(request);
 
-        // 校验通过后才修改状态，避免不完整或金额非法的草稿进入已提交状态。
-        FkReimMain main = getMainByReimNo(reimNo);
-        main.setBillStatus(ReimbursementConstants.STATUS_SUBMITTED);
-        main.setBillStatusName(ReimbursementConstants.STATUS_SUBMITTED_NAME);
-        main.setSubmittedAt(LocalDateTime.now());
-        main.setUpdatedAt(LocalDateTime.now());
-        mainService.updateById(main);
+        // 带状态条件的原子更新，防止并发重复提交
+        LambdaUpdateWrapper<FkReimMain> wrapper = new LambdaUpdateWrapper<>();
+        wrapper.eq(FkReimMain::getId, main.getId())
+               .eq(FkReimMain::getBillStatus, ReimbursementConstants.STATUS_DRAFT)
+               .set(FkReimMain::getBillStatus, ReimbursementConstants.STATUS_SUBMITTED)
+               .set(FkReimMain::getBillStatusName, ReimbursementConstants.STATUS_SUBMITTED_NAME)
+               .set(FkReimMain::getSubmittedAt, LocalDateTime.now())
+               .set(FkReimMain::getUpdatedAt, LocalDateTime.now());
+        boolean updated = mainService.update(wrapper);
+        if (!updated) {
+            throw new StatusConflictException("提交失败：单据状态已变更，请刷新后重试");
+        }
+
         publishEvent("reim.bill.submitted", reimNo);
-        return new ReimbursementSaveResponse(reimNo, ReimbursementConstants.STATUS_SUBMITTED, ReimbursementConstants.STATUS_SUBMITTED_NAME);
+        return new ReimbursementSaveResponse(reimNo,
+                ReimbursementConstants.STATUS_SUBMITTED, ReimbursementConstants.STATUS_SUBMITTED_NAME);
     }
 
     /**
@@ -358,7 +376,10 @@ public class ReimbursementServiceImpl implements ReimbursementService {
     public void voidBill(String reimNo) {
         FkReimMain main = getMainByReimNo(reimNo);
         if (ReimbursementConstants.STATUS_DRAFT.equals(main.getBillStatus())) {
-            throw new IllegalArgumentException("草稿请直接删除，不需要作废");
+            throw new StatusConflictException("草稿请直接删除，不需要作废");
+        }
+        if (ReimbursementConstants.STATUS_VOIDED.equals(main.getBillStatus())) {
+            throw new StatusConflictException("该单据已作废，不能重复操作");
         }
         main.setBillStatus(ReimbursementConstants.STATUS_VOIDED);
         main.setBillStatusName(ReimbursementConstants.STATUS_VOIDED_NAME);
@@ -685,25 +706,7 @@ public class ReimbursementServiceImpl implements ReimbursementService {
      * 至少一条有效行程、合法每日补助和总额一致的费用分摊。</p>
      */
     private void validateForSubmit(ReimbursementSaveRequest request) {
-        // 提交校验必须在写库前完成，防止绕过前端直接构造不完整或超额请求。
-        if (!StringUtils.hasText(request.getTitle())) {
-            throw new IllegalArgumentException("报销标题不能为空");
-        }
-        if (!StringUtils.hasText(request.getReimburserName())) {
-            throw new IllegalArgumentException("报销人不能为空");
-        }
-        if (!StringUtils.hasText(request.getReimDepartmentName())) {
-            throw new IllegalArgumentException("报销部门不能为空");
-        }
-        if (!StringUtils.hasText(request.getBusinessTypeName())) {
-            throw new IllegalArgumentException("业务类型不能为空");
-        }
-        if (!StringUtils.hasText(request.getReason())) {
-            throw new IllegalArgumentException("出差事由不能为空");
-        }
-        if (request.getItineraries() == null || request.getItineraries().isEmpty()) {
-            throw new IllegalArgumentException("至少需要一条行程");
-        }
+        // 单字段必填校验已由 Bean Validation（SubmitGroup）接管，此处仅做跨字段/跨行/需查数据库的校验。
         request.getItineraries().forEach(this::validateItineraryForSubmit);
         validateAllocationsForSubmit(request.getAllocations(), estimateTotalAmount(request));
     }
@@ -1049,7 +1052,7 @@ public class ReimbursementServiceImpl implements ReimbursementService {
         }
         FkReimMain main = mainService.getOne(new LambdaQueryWrapper<FkReimMain>().eq(FkReimMain::getReimNo, reimNo), false);
         if (main == null) {
-            throw new IllegalArgumentException("报销单不存在：" + reimNo);
+            throw new ResourceNotFoundException("报销单不存在：" + reimNo);
         }
         return main;
     }
@@ -1107,8 +1110,8 @@ public class ReimbursementServiceImpl implements ReimbursementService {
         if (ratio == null) {
             return BigDecimal.ZERO;
         }
-        BigDecimal normalized = ratio.compareTo(BigDecimal.ONE) > 0 ? ratio.divide(new BigDecimal("100"), 6, RoundingMode.HALF_UP) : ratio;
-        return normalized.setScale(6, RoundingMode.HALF_UP);
+        // 前端已统一传 0-1 小数，后端不再兼容百分数格式
+        return ratio.setScale(6, RoundingMode.HALF_UP);
     }
 
     /** 忽略空值后计算金额合计，并统一保留两位小数。 */

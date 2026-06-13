@@ -4,7 +4,9 @@ import com.enpenseSystem.common.Result;
 import com.enpenseSystem.dto.AllowanceGenerateRequest;
 import com.enpenseSystem.dto.ReimbursementPageQuery;
 import com.enpenseSystem.dto.ReimbursementSaveRequest;
+import com.enpenseSystem.dto.SubmitGroup;
 import com.enpenseSystem.service.ReimbursementService;
+import org.springframework.validation.annotation.Validated;
 import org.springframework.web.bind.annotation.DeleteMapping;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.ModelAttribute;
@@ -51,9 +53,9 @@ public class TravelReimbursementController {
         return Result.ok(reimbursementService.createDraft(request));
     }
 
-    /** 创建完整报销单并直接提交。 */
+    /** 创建完整报销单并直接提交。提交时触发 Bean Validation。 */
     @PostMapping("/submit")
-    public Result createAndSubmit(@RequestBody ReimbursementSaveRequest request) {
+    public Result createAndSubmit(@RequestBody @Validated(SubmitGroup.class) ReimbursementSaveRequest request) {
         return Result.ok(reimbursementService.createAndSubmit(request));
     }
 
