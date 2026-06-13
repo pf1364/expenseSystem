@@ -17,6 +17,12 @@ request.interceptors.response.use(
   (error) => {
     const status = error.response?.status
     const msg = error.response?.data?.message || error.message
+
+    if (status === 401) {
+      // Token 过期或未登录，跳转登录页
+      window.location.href = '/login'
+      return Promise.reject(error)
+    }
     if (status === 400) {
       ElMessage.error(msg || '参数错误')
     } else if (status === 404) {
