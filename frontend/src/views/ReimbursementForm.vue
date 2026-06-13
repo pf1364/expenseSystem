@@ -107,7 +107,7 @@
           <template #default="{ row }">{{ row.days || dayCount(row) }}</template>
         </el-table-column>
         <el-table-column label="行程" min-width="150">
-          <template #default="{ row }">{{ allowanceRoute(row) }}</template>
+          <template #default="{ row }">{{ routeText(row) }}</template>
         </el-table-column>
         <el-table-column label="补助城市" min-width="120">
           <template #default="{ row }">{{ row.endCityName }}</template>
