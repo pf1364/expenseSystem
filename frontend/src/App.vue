@@ -21,8 +21,8 @@
       </el-menu>
     </el-aside>
 
-    <!-- 登录页面不显示外层容器，由 Login.vue 自己渲染 -->
-    <template v-if="$route.path === '/login'">
+    <!-- 未登录时仅渲染 router-view，不显示外层壳 -->
+    <template v-if="!authStore.isLoggedIn">
       <router-view />
     </template>
 
