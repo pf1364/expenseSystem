@@ -33,8 +33,13 @@ export const useAuthStore = defineStore('auth', () => {
   async function checkAuth() {
     try {
       const data = await getCurrentUser()
-      user.value = data
-      isLoggedIn.value = true
+      if (data) {
+        user.value = data
+        isLoggedIn.value = true
+      } else {
+        user.value = null
+        isLoggedIn.value = false
+      }
     } catch {
       user.value = null
       isLoggedIn.value = false
