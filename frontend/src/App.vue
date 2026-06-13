@@ -59,7 +59,7 @@
 </template>
 
 <script setup>
-import { computed, onMounted } from 'vue'
+import { computed } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { Document, TrendCharts, UserFilled, ArrowDown, SwitchButton } from '@element-plus/icons-vue'
 import { useAuthStore } from '@/stores/auth'
@@ -67,13 +67,6 @@ import { useAuthStore } from '@/stores/auth'
 const route = useRoute()
 const router = useRouter()
 const authStore = useAuthStore()
-
-onMounted(() => {
-  // 应用启动时检查登录状态
-  if (!authStore.isLoggedIn) {
-    authStore.checkAuth()
-  }
-})
 
 async function handleCommand(command) {
   if (command === 'logout') {

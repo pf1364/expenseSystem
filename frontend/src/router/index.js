@@ -22,8 +22,8 @@ const router = createRouter({
 router.beforeEach(async (to, from, next) => {
   const authStore = useAuthStore()
 
-  // 首次进入时需要检查登录状态（Pinia 状态不持久化，刷新丢失）
-  if (!authStore.isLoggedIn) {
+  // 仅在访问需要认证的页面时才检查登录状态
+  if (to.meta.requiresAuth && !authStore.isLoggedIn) {
     await authStore.checkAuth()
   }
 
