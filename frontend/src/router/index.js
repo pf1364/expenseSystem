@@ -1,19 +1,41 @@
 import { createRouter, createWebHistory } from 'vue-router'
+import { useAuthStore } from '@/stores/auth'
 import ReimbursementList from '../views/ReimbursementList.vue'
 import ReimbursementForm from '../views/ReimbursementForm.vue'
 import PersonalStats from '../views/PersonalStats.vue'
+import Login from '../views/Login.vue'
 
-// 路由区分列表、新建、详情/编辑和个人统计四类页面。
 const routes = [
   { path: '/', redirect: '/reimbursements' },
-  { path: '/reimbursements', component: ReimbursementList },
-  { path: '/reimbursements/new', component: ReimbursementForm },
-  { path: '/reimbursements/:reimNo', component: ReimbursementForm, props: true },
-  { path: '/statistics/personal', component: PersonalStats }
+  { path: '/login', component: Login, meta: { guest: true } },
+  { path: '/reimbursements', component: ReimbursementList, meta: { requiresAuth: true } },
+  { path: '/reimbursements/new', component: ReimbursementForm, meta: { requiresAuth: true } },
+  { path: '/reimbursements/:reimNo', component: ReimbursementForm, props: true, meta: { requiresAuth: true } },
+  { path: '/statistics/personal', component: PersonalStats, meta: { requiresAuth: true } }
 ]
 
-export default createRouter({
-  // 使用 HTML5 History，生产部署时服务器需要把未知路径回退到 index.html。
+const router = createRouter({
   history: createWebHistory(),
   routes
 })
+
+router.beforeEach(async (to, from, next) => {
+  const authStore = useAuthStore()
+
+  // 首次进入时需要检查登录状态（Pinia 状态不持久化，刷新丢失）
+  if (!authStore.isLoggedIn) {
+    await authStore.checkAuth()
+  }
+
+  if (to.meta.requiresAuth && !authStore.isLoggedIn) {
+    // 需要登录但未登录 → 跳转登录页
+    next('/login')
+  } else if (to.meta.guest && authStore.isLoggedIn) {
+    // 已登录访问登录页 → 跳转首页
+    next('/')
+  } else {
+    next()
+  }
+})
+
+export default router
