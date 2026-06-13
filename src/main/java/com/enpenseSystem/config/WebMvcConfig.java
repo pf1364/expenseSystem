@@ -23,6 +23,6 @@ public class WebMvcConfig implements WebMvcConfigurer {
     public void addInterceptors(InterceptorRegistry registry) {
         registry.addInterceptor(new AuthInterceptor(stringRedisTemplate))
                 .addPathPatterns("/api/**")
-                .excludePathPatterns("/api/auth/login", "/api/auth/logout");
+                .excludePathPatterns("/api/auth/login", "/api/auth/logout", "/api/auth/current-user");
     }
 }

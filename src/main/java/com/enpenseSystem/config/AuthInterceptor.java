@@ -25,10 +25,11 @@ public class AuthInterceptor implements org.springframework.web.servlet.HandlerI
     private static final String TOKEN_COOKIE_NAME = "token";
     private static final String REDIS_KEY_PREFIX = "auth:token:";
 
-    /** 不需要认证的白名单路径前缀。 */
+    /** 不需要认证的白名单路径前缀。current-user 由控制器自行判断登录态。 */
     private static final List<String> WHITE_LIST = List.of(
             "/api/auth/login",
-            "/api/auth/logout"
+            "/api/auth/logout",
+            "/api/auth/current-user"
     );
 
     private final StringRedisTemplate stringRedisTemplate;
