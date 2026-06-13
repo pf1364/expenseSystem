@@ -20,4 +20,7 @@ public final class ResultCodeConstants {
 
     public static final Integer NOT_FOUND_CODE = 404;
     public static final String NOT_FOUND_MESSAGE = "资源不存在";
+
+    public static final Integer CONFLICT_CODE = 409;
+    public static final String CONFLICT_MESSAGE = "状态冲突";
 }
