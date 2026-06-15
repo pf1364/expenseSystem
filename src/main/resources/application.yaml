@@ -42,3 +42,8 @@ app:
     enabled: ${APP_KAFKA_ENABLED:false}
   auth:
     token-ttl: ${APP_AUTH_TOKEN_TTL:86400}
+  reimbursement:
+    detail-cache:
+      enabled: ${APP_REIM_DETAIL_CACHE_ENABLED:true}
+      ttl: ${APP_REIM_DETAIL_CACHE_TTL:10m}
+      null-ttl: ${APP_REIM_DETAIL_CACHE_NULL_TTL:2m}
