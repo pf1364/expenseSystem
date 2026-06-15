@@ -7,6 +7,7 @@ import com.enpenseSystem.service.FkReimAllocationService;
 import com.enpenseSystem.service.FkReimAllowanceDayService;
 import com.enpenseSystem.service.FkReimItineraryService;
 import com.enpenseSystem.service.FkReimMainService;
+import com.enpenseSystem.service.ReimbursementDetailCache;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.ObjectProvider;
@@ -46,7 +47,8 @@ class ReimbursementServiceImplValidationTests {
                 mock(FkReimAllocationService.class),
                 cityAllowanceService,
                 mock(ObjectProvider.class),
-                mock(ObjectProvider.class)
+                mock(ObjectProvider.class),
+                mock(ReimbursementDetailCache.class)
         );
     }
 

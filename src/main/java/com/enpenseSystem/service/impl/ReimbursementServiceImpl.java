@@ -23,6 +23,7 @@ import com.enpenseSystem.service.FkReimAllocationService;
 import com.enpenseSystem.service.FkReimAllowanceDayService;
 import com.enpenseSystem.service.FkReimItineraryService;
 import com.enpenseSystem.service.FkReimMainService;
+import com.enpenseSystem.service.ReimbursementDetailCache;
 import com.enpenseSystem.service.ReimbursementService;
 import com.enpenseSystem.utils.ReimbursementConstants;
 import org.springframework.beans.BeanUtils;
@@ -87,6 +88,8 @@ public class ReimbursementServiceImpl implements ReimbursementService {
     private final ObjectProvider<StringRedisTemplate> redisTemplateProvider;
     /** Kafka 为可选依赖，仅在配置开启时发送业务事件。 */
     private final ObjectProvider<KafkaTemplate<String, String>> kafkaTemplateProvider;
+    /** 报销单完整详情缓存，封装 Redis Key、JSON、TTL 和事务提交后失效。 */
+    private final ReimbursementDetailCache detailCache;
 
     /** 是否启用 Kafka 消息发送，默认关闭。 */
     @Value("${app.kafka.enabled:false}")
@@ -98,7 +101,8 @@ public class ReimbursementServiceImpl implements ReimbursementService {
                                     FkReimAllocationService allocationService,
                                     FkCityAllowanceService cityAllowanceService,
                                     ObjectProvider<StringRedisTemplate> redisTemplateProvider,
-                                    ObjectProvider<KafkaTemplate<String, String>> kafkaTemplateProvider) {
+                                    ObjectProvider<KafkaTemplate<String, String>> kafkaTemplateProvider,
+                                    ReimbursementDetailCache detailCache) {
         this.mainService = mainService;
         this.itineraryService = itineraryService;
         this.allowanceDayService = allowanceDayService;
@@ -106,6 +110,7 @@ public class ReimbursementServiceImpl implements ReimbursementService {
         this.cityAllowanceService = cityAllowanceService;
         this.redisTemplateProvider = redisTemplateProvider;
         this.kafkaTemplateProvider = kafkaTemplateProvider;
+        this.detailCache = detailCache;
     }
 
     /**
@@ -151,6 +156,32 @@ public class ReimbursementServiceImpl implements ReimbursementService {
      */
     @Override
     public ReimbursementDetailVO detail(String reimNo) {
+        // 三态缓存读取：正常命中直接返回，空值命中直接返回 404，只有 MISS 查询数据库。
+        ReimbursementDetailCache.LookupResult cacheResult = detailCache.lookup(reimNo);
+        if (cacheResult.status() == ReimbursementDetailCache.LookupStatus.HIT) {
+            return cacheResult.detail();
+        }
+        if (cacheResult.status() == ReimbursementDetailCache.LookupStatus.NULL_HIT) {
+            throw new ResourceNotFoundException("报销单不存在：" + reimNo);
+        }
+
+        try {
+            ReimbursementDetailVO detail = loadDetailFromDatabase(reimNo);
+            detailCache.put(reimNo, detail);
+            return detail;
+        } catch (ResourceNotFoundException exception) {
+            // 不存在的单号短暂缓存 2 分钟，避免相同恶意请求持续穿透到数据库。
+            detailCache.putNull(reimNo);
+            throw exception;
+        }
+    }
+
+    /**
+     * 固定查询四次数据库并组装完整详情。
+     *
+     * <p>该方法不读取或写入缓存，供缓存未命中和提交草稿校验使用。</p>
+     */
+    private ReimbursementDetailVO loadDetailFromDatabase(String reimNo) {
         // 先找到主表记录并取得主键，后续三张子表都通过 main_id 关联该主键。
         FkReimMain main = getMainByReimNo(reimNo);
 
@@ -231,6 +262,7 @@ public class ReimbursementServiceImpl implements ReimbursementService {
         fillMain(main, request, main.getBillStatus());
         saveChildren(main, request);
         refreshMainTotals(main);
+        detailCache.evictAfterCommit(reimNo);
         return new ReimbursementSaveResponse(main.getReimNo(), main.getBillStatus(), main.getBillStatusName());
     }
 
@@ -251,7 +283,8 @@ public class ReimbursementServiceImpl implements ReimbursementService {
         }
 
         // 详情 VO 中已经包含全部子表数据，将其转换为保存请求后可复用统一校验逻辑。
-        ReimbursementDetailVO detail = detail(reimNo);
+        // 提交属于写业务，必须直接读取数据库中的最新状态，不能依赖可能即将失效的缓存。
+        ReimbursementDetailVO detail = loadDetailFromDatabase(reimNo);
         ReimbursementSaveRequest request = toSaveRequest(detail);
         validateForSubmit(request);
 
@@ -269,6 +302,7 @@ public class ReimbursementServiceImpl implements ReimbursementService {
         }
 
         publishEvent("reim.bill.submitted", reimNo);
+        detailCache.evictAfterCommit(reimNo);
         return new ReimbursementSaveResponse(reimNo,
                 ReimbursementConstants.STATUS_SUBMITTED, ReimbursementConstants.STATUS_SUBMITTED_NAME);
     }
@@ -347,6 +381,8 @@ public class ReimbursementServiceImpl implements ReimbursementService {
 
         // 不直接沿用源主表汇总字段，而是根据已复制的子表重新计算一次。
         refreshMainTotals(target);
+        // 新单号可能在创建前被恶意请求并留下空值缓存，事务提交后必须清理。
+        detailCache.evictAfterCommit(target.getReimNo());
         return new ReimbursementSaveResponse(target.getReimNo(), target.getBillStatus(), target.getBillStatusName());
     }
 
@@ -364,6 +400,7 @@ public class ReimbursementServiceImpl implements ReimbursementService {
         }
         deleteChildren(main.getId());
         mainService.removeById(main.getId());
+        detailCache.evictAfterCommit(reimNo);
     }
 
     /**
@@ -386,6 +423,7 @@ public class ReimbursementServiceImpl implements ReimbursementService {
         main.setUpdatedAt(LocalDateTime.now());
         mainService.updateById(main);
         publishEvent("reim.bill.voided", reimNo);
+        detailCache.evictAfterCommit(reimNo);
     }
 
     /**
@@ -491,6 +529,8 @@ public class ReimbursementServiceImpl implements ReimbursementService {
         saveChildren(main, request);
         // 子表保存完成后，以数据库数据为准更新主表汇总字段。
         refreshMainTotals(main);
+        // 清除该新单号在创建前可能已经产生的空值缓存。
+        detailCache.evictAfterCommit(main.getReimNo());
         return new ReimbursementSaveResponse(main.getReimNo(), main.getBillStatus(), main.getBillStatusName());
     }
 
