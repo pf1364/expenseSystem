@@ -8,19 +8,30 @@ const request = axios.create({
 })
 
 // 后端统一返回 { code, message, data }，页面只接收真正的 data。
+// HTTP 2xx 时直接返回 data（后端保证此时 code 必为 200），
+// 4xx/5xx 时按状态码展示对应级别的提示。
 request.interceptors.response.use(
   (response) => {
-    const body = response.data
-    if (body && body.code !== 200) {
-      // HTTP 可能仍是 200，因此还必须检查响应体中的业务 code。
-      ElMessage.error(body.message || '请求失败')
-      return Promise.reject(new Error(body.message || '请求失败'))
-    }
-    return body?.data
+    return response.data?.data
   },
   (error) => {
-    // 网络超时、代理失败或非 2xx HTTP 状态进入此分支。
-    ElMessage.error(error.message || '网络异常')
+    const status = error.response?.status
+    const msg = error.response?.data?.message || error.message
+
+    if (status === 401) {
+      // Token 过期或未登录，跳转登录页
+      window.location.href = '/login'
+      return Promise.reject(error)
+    }
+    if (status === 400) {
+      ElMessage.error(msg || '参数错误')
+    } else if (status === 404) {
+      ElMessage.error(msg || '资源不存在')
+    } else if (status === 409) {
+      ElMessage.warning(msg || '数据冲突，请刷新后重试')
+    } else {
+      ElMessage.error('网络异常')
+    }
     return Promise.reject(error)
   }
 )

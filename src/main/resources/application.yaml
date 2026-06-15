@@ -40,3 +40,5 @@ logging:
 app:
   kafka:
     enabled: ${APP_KAFKA_ENABLED:false}
+  auth:
+    token-ttl: ${APP_AUTH_TOKEN_TTL:86400}

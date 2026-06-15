@@ -1,5 +1,10 @@
 package com.enpenseSystem.dto;
 
+import jakarta.validation.Valid;
+import jakarta.validation.constraints.DecimalMax;
+import jakarta.validation.constraints.DecimalMin;
+import jakarta.validation.constraints.NotBlank;
+import jakarta.validation.constraints.NotEmpty;
 import lombok.Data;
 
 import java.math.BigDecimal;
@@ -16,20 +21,38 @@ import java.util.List;
 public class ReimbursementSaveRequest {
 
     private String reimNo; // 报销单号，创建时可为空，更新时必传或从路径获取
+
+    @NotBlank(message = "报销标题不能为空", groups = SubmitGroup.class)
     private String title; // 报销标题
+
     private String reimburserId; // 报销人ID，当前可为空
     private String reimburserNo; // 报销人工号
+
+    @NotBlank(message = "报销人不能为空", groups = SubmitGroup.class)
     private String reimburserName; // 报销人姓名
+
     private String reimDepartmentId; // 报销部门ID，当前可为空
     private String reimDepartmentNo; // 报销部门编号
+
+    @NotBlank(message = "报销部门不能为空", groups = SubmitGroup.class)
     private String reimDepartmentName; // 报销部门名称
+
     private String reimCompanyNames; // 费用归属公司名称汇总
     private String businessTypeId; // 业务类型ID，当前可为空
     private String businessTypeNo; // 业务类型编号
+
+    @NotBlank(message = "业务类型不能为空", groups = SubmitGroup.class)
     private String businessTypeName; // 业务类型名称
+
+    @NotBlank(message = "出差事由不能为空", groups = SubmitGroup.class)
     private String reason; // 出差事由
     private String remark; // 备注信息
+    @NotEmpty(message = "至少需要一条行程", groups = SubmitGroup.class)
+    @Valid
     private List<ItineraryRequest> itineraries; // 行程信息
+
+    @NotEmpty(message = "费用归属及分摊不能为空", groups = SubmitGroup.class)
+    @Valid
     private List<AllocationRequest> allocations; // 费用归属及分摊信息
 
     /** 单条行程请求，包含该行程对应的每日补助明细。 */
@@ -82,10 +105,17 @@ public class ReimbursementSaveRequest {
         private String allocationOwnerType; // 分摊归属方类型：COMPANY公司，DEPARTMENT部门
         private String allocationOwnerId; // 分摊归属方ID，当前可为空
         private String allocationOwnerNo; // 分摊归属方编号
+        @NotBlank(message = "分摊归属名称不能为空", groups = SubmitGroup.class)
         private String allocationOwnerName; // 分摊归属方名称
+
         private String businessId; // 分摊业务ID，当前可为空
         private String businessName; // 分摊业务名称
+
+        @DecimalMin(value = "0", message = "分摊比例不能小于0")
+        @DecimalMax(value = "1", message = "分摊比例不能超过1")
         private BigDecimal allocationRatio; // 分摊比例，数据库存0-1
+
+        @DecimalMin(value = "0.00", message = "分摊金额不能小于0")
         private BigDecimal allocationAmount; // 分摊金额
         private Integer sortNo; // 排序号
     }

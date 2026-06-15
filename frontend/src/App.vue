@@ -1,6 +1,7 @@
 <template>
   <el-container class="app-shell">
-    <el-aside width="232px" class="sidebar">
+    <!-- 未登录时不显示侧边栏 -->
+    <el-aside v-if="authStore.isLoggedIn" width="232px" class="sidebar">
       <div class="brand">
         <div class="brand-mark">差</div>
         <div>
@@ -20,11 +21,34 @@
       </el-menu>
     </el-aside>
 
-    <el-container>
+    <!-- 未登录时仅渲染 router-view，不显示外层壳 -->
+    <template v-if="!authStore.isLoggedIn">
+      <router-view />
+    </template>
+
+    <el-container v-else>
       <el-header class="topbar">
         <div>
           <div class="topbar-title">{{ pageTitle }}</div>
           <div class="topbar-subtitle">{{ pageSubtitle }}</div>
+        </div>
+        <!-- 右侧用户信息 + 退出 -->
+        <div v-if="authStore.isLoggedIn" class="topbar-user">
+          <el-dropdown trigger="click" @command="handleCommand">
+            <span class="user-info">
+              <el-icon><UserFilled /></el-icon>
+              <span class="user-name">{{ authStore.user?.displayName || authStore.user?.username }}</span>
+              <el-icon><ArrowDown /></el-icon>
+            </span>
+            <template #dropdown>
+              <el-dropdown-menu>
+                <el-dropdown-item command="logout">
+                  <el-icon><SwitchButton /></el-icon>
+                  退出登录
+                </el-dropdown-item>
+              </el-dropdown-menu>
+            </template>
+          </el-dropdown>
         </div>
       </el-header>
       <el-main class="main-panel">
@@ -36,10 +60,20 @@
 
 <script setup>
 import { computed } from 'vue'
-import { useRoute } from 'vue-router'
-import { Document, TrendCharts } from '@element-plus/icons-vue'
+import { useRoute, useRouter } from 'vue-router'
+import { Document, TrendCharts, UserFilled, ArrowDown, SwitchButton } from '@element-plus/icons-vue'
+import { useAuthStore } from '@/stores/auth'
 
 const route = useRoute()
+const router = useRouter()
+const authStore = useAuthStore()
+
+async function handleCommand(command) {
+  if (command === 'logout') {
+    await authStore.logout()
+    router.push('/login')
+  }
+}
 
 const pageTitle = computed(() => {
   if (route.path.startsWith('/statistics')) return '个人信息统计'
@@ -54,3 +88,29 @@ const pageSubtitle = computed(() => {
   return '查询、创建、提交、删除和作废差旅报销单'
 })
 </script>
+
+<style scoped>
+.topbar-user {
+  margin-left: auto;
+}
+
+.user-info {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  cursor: pointer;
+  color: #465460;
+  font-size: 14px;
+}
+
+.user-info:hover {
+  color: #1f9d8a;
+}
+
+.user-name {
+  max-width: 120px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+</style>
