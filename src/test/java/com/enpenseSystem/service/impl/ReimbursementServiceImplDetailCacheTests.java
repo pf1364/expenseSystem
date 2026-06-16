@@ -10,7 +10,11 @@ import com.enpenseSystem.service.FkReimAllocationService;
 import com.enpenseSystem.service.FkReimAllowanceDayService;
 import com.enpenseSystem.service.FkReimItineraryService;
 import com.enpenseSystem.service.FkReimMainService;
-import com.enpenseSystem.service.ReimbursementDetailCache;
+import com.enpenseSystem.service.support.ReimbursementDetailCache;
+import com.enpenseSystem.service.support.AllocationCalculator;
+import com.enpenseSystem.service.support.AllowanceCalculator;
+import com.enpenseSystem.service.support.ReimbursementDetailAssembler;
+import com.enpenseSystem.service.support.ReimbursementNoGenerator;
 import com.enpenseSystem.utils.ReimbursementConstants;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
@@ -37,6 +41,7 @@ class ReimbursementServiceImplDetailCacheTests {
     private FkReimAllowanceDayService allowanceDayService;
     private FkReimAllocationService allocationService;
     private ReimbursementDetailCache detailCache;
+    private ReimbursementNoGenerator reimNoGenerator;
     private ReimbursementServiceImpl service;
 
     @BeforeEach
@@ -47,6 +52,8 @@ class ReimbursementServiceImplDetailCacheTests {
         allowanceDayService = mock(FkReimAllowanceDayService.class);
         allocationService = mock(FkReimAllocationService.class);
         detailCache = mock(ReimbursementDetailCache.class);
+        reimNoGenerator = mock(ReimbursementNoGenerator.class);
+        when(reimNoGenerator.nextReimNo()).thenReturn("CLBX202606160001");
 
         service = new ReimbursementServiceImpl(
                 mainService,
@@ -55,8 +62,11 @@ class ReimbursementServiceImplDetailCacheTests {
                 allocationService,
                 mock(FkCityAllowanceService.class),
                 mock(ObjectProvider.class),
-                mock(ObjectProvider.class),
-                detailCache
+                detailCache,
+                new ReimbursementDetailAssembler(),
+                reimNoGenerator,
+                new AllocationCalculator(),
+                new AllowanceCalculator(mock(FkCityAllowanceService.class))
         );
     }
 
@@ -155,7 +165,7 @@ class ReimbursementServiceImplDetailCacheTests {
         when(allowanceDayService.list(any(Wrapper.class))).thenReturn(List.of());
         when(allocationService.list(any(Wrapper.class))).thenReturn(List.of());
 
-        assertThatThrownBy(() -> service.submitDraft(REIM_NO))
+        assertThatThrownBy(() -> service.submitDraft(REIM_NO, null))
                 .isInstanceOf(IllegalArgumentException.class)
                 .hasMessageContaining("费用归属及分摊不能为空");
 

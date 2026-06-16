@@ -21,6 +21,7 @@ public class FkReimMain {
     @TableId(type = IdType.AUTO)
     private Long id; // 主键ID
     private String reimNo; // 报销单号，唯一
+    private Integer version; // 乐观锁版本号，每次保存或提交成功后递增
     private String billStatus; // 单据状态编码
     private String billStatusName; // 单据状态名称
     private String billType; // 单据类型编码

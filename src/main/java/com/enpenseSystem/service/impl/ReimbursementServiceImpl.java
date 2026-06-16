@@ -23,13 +23,16 @@ import com.enpenseSystem.service.FkReimAllocationService;
 import com.enpenseSystem.service.FkReimAllowanceDayService;
 import com.enpenseSystem.service.FkReimItineraryService;
 import com.enpenseSystem.service.FkReimMainService;
-import com.enpenseSystem.service.ReimbursementDetailCache;
+import com.enpenseSystem.service.support.ReimbursementDetailCache;
 import com.enpenseSystem.service.ReimbursementService;
+import com.enpenseSystem.service.support.ReimbursementDetailAssembler;
+import com.enpenseSystem.service.support.ReimbursementNoGenerator;
+import com.enpenseSystem.service.support.AllocationCalculator;
+import com.enpenseSystem.service.support.AllowanceCalculator;
 import com.enpenseSystem.utils.ReimbursementConstants;
 import org.springframework.beans.BeanUtils;
 import org.springframework.beans.factory.ObjectProvider;
 import org.springframework.beans.factory.annotation.Value;
-import org.springframework.data.redis.core.StringRedisTemplate;
 import org.springframework.kafka.core.KafkaTemplate;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
@@ -37,13 +40,9 @@ import org.springframework.util.StringUtils;
 
 import java.math.BigDecimal;
 import java.math.RoundingMode;
-import java.time.DayOfWeek;
-import java.time.LocalDate;
 import java.time.LocalDateTime;
 import java.time.format.DateTimeFormatter;
 import java.time.temporal.ChronoUnit;
-import java.util.ArrayList;
-import java.util.Comparator;
 import java.util.HashMap;
 import java.util.HashSet;
 import java.util.LinkedHashMap;
@@ -84,12 +83,18 @@ public class ReimbursementServiceImpl implements ReimbursementService {
     private final FkReimAllocationService allocationService;
     /** 城市补助标准表服务。 */
     private final FkCityAllowanceService cityAllowanceService;
-    /** Redis 为可选依赖，本地未启动 Redis 时仍允许项目运行。 */
-    private final ObjectProvider<StringRedisTemplate> redisTemplateProvider;
     /** Kafka 为可选依赖，仅在配置开启时发送业务事件。 */
     private final ObjectProvider<KafkaTemplate<String, String>> kafkaTemplateProvider;
     /** 报销单完整详情缓存，封装 Redis Key、JSON、TTL 和事务提交后失效。 */
     private final ReimbursementDetailCache detailCache;
+    /** 详情对象组装器：负责 Entity、VO 和保存请求之间的转换。 */
+    private final ReimbursementDetailAssembler detailAssembler;
+    /** 报销单号生成器：负责 Redis 自增和本地时间戳降级。 */
+    private final ReimbursementNoGenerator reimNoGenerator;
+    /** 费用分摊计算器：负责比例、金额和提交合计校验。 */
+    private final AllocationCalculator allocationCalculator;
+    /** 每日补助计算器：负责城市标准查询、补助生成和金额校验。 */
+    private final AllowanceCalculator allowanceCalculator;
 
     /** 是否启用 Kafka 消息发送，默认关闭。 */
     @Value("${app.kafka.enabled:false}")
@@ -100,17 +105,23 @@ public class ReimbursementServiceImpl implements ReimbursementService {
                                     FkReimAllowanceDayService allowanceDayService,
                                     FkReimAllocationService allocationService,
                                     FkCityAllowanceService cityAllowanceService,
-                                    ObjectProvider<StringRedisTemplate> redisTemplateProvider,
                                     ObjectProvider<KafkaTemplate<String, String>> kafkaTemplateProvider,
-                                    ReimbursementDetailCache detailCache) {
+                                    ReimbursementDetailCache detailCache,
+                                    ReimbursementDetailAssembler detailAssembler,
+                                    ReimbursementNoGenerator reimNoGenerator,
+                                    AllocationCalculator allocationCalculator,
+                                    AllowanceCalculator allowanceCalculator) {
         this.mainService = mainService;
         this.itineraryService = itineraryService;
         this.allowanceDayService = allowanceDayService;
         this.allocationService = allocationService;
         this.cityAllowanceService = cityAllowanceService;
-        this.redisTemplateProvider = redisTemplateProvider;
         this.kafkaTemplateProvider = kafkaTemplateProvider;
         this.detailCache = detailCache;
+        this.detailAssembler = detailAssembler;
+        this.reimNoGenerator = reimNoGenerator;
+        this.allocationCalculator = allocationCalculator;
+        this.allowanceCalculator = allowanceCalculator;
     }
 
     /**
@@ -143,7 +154,7 @@ public class ReimbursementServiceImpl implements ReimbursementService {
         // MyBatis-Plus 根据页码和页大小执行分页 SQL，并额外查询符合条件的总记录数。
         Page<FkReimMain> page = mainService.page(new Page<>(query.getPageNum(), query.getPageSize()), wrapper);
         // Entity 仅用于数据库映射，对外返回前转换为列表专用 VO。
-        List<ReimbursementPageVO> records = page.getRecords().stream().map(this::toPageVO).collect(Collectors.toList());
+        List<ReimbursementPageVO> records = page.getRecords().stream().map(detailAssembler::toPageVO).collect(Collectors.toList());
         return new PageData<>(page.getTotal(), query.getPageNum(), query.getPageSize(), records);
     }
 
@@ -164,7 +175,7 @@ public class ReimbursementServiceImpl implements ReimbursementService {
         if (cacheResult.status() == ReimbursementDetailCache.LookupStatus.NULL_HIT) {
             throw new ResourceNotFoundException("报销单不存在：" + reimNo);
         }
-
+        // 尝试查询数据库，查询结果正常时写入缓存，查询结果不存在时写入空值缓存，查询异常时不写缓存。
         try {
             ReimbursementDetailVO detail = loadDetailFromDatabase(reimNo);
             detailCache.put(reimNo, detail);
@@ -197,22 +208,14 @@ public class ReimbursementServiceImpl implements ReimbursementService {
                 .orderByAsc(FkReimAllowanceDay::getAllowanceDate)
                 .orderByAsc(FkReimAllowanceDay::getId));
 
-        // 以 itinerary_id 为键分组，组装行程 VO 时可直接取得该行程的补助列表。
-        Map<Long, List<FkReimAllowanceDay>> daysByItinerary = days.stream()
-                .collect(Collectors.groupingBy(FkReimAllowanceDay::getItineraryId, LinkedHashMap::new, Collectors.toList()));
-
         // 查询费用归属及分摊，sort_no 决定前端展示顺序。
         List<FkReimAllocation> allocations = allocationService.list(new LambdaQueryWrapper<FkReimAllocation>()
                 .eq(FkReimAllocation::getMainId, main.getId())
                 .orderByAsc(FkReimAllocation::getSortNo)
                 .orderByAsc(FkReimAllocation::getId));
 
-        // 主表字段直接复制，子表则转换为嵌套 VO 后单独设置。
-        ReimbursementDetailVO vo = new ReimbursementDetailVO();
-        BeanUtils.copyProperties(main, vo);
-        vo.setItineraries(itineraries.stream().map(item -> toItineraryVO(item, daysByItinerary.get(item.getId()))).collect(Collectors.toList()));
-        vo.setAllocations(allocations.stream().map(this::toAllocationVO).collect(Collectors.toList()));
-        return vo;
+        // 四次数据库查询得到的是平铺结构，交给组装器统一转换成前端需要的嵌套详情结构。
+        return detailAssembler.assemble(main, itineraries, days, allocations);
     }
 
     /**
@@ -257,13 +260,17 @@ public class ReimbursementServiceImpl implements ReimbursementService {
         if (!ReimbursementConstants.STATUS_DRAFT.equals(main.getBillStatus())) {
             throw new StatusConflictException("只有草稿状态可以修改");
         }
+        // 乐观锁校验：客户端必须回传详情接口给出的 version，后端比对后拒绝并发冲突的保存。
+        if (request.getVersion() != null && !request.getVersion().equals(main.getVersion())) {
+            throw new StatusConflictException("该报销单已被他人修改，请刷新后重新编辑");
+        }
         request.setReimNo(reimNo);
         // 保留数据库中的当前状态，更新接口不接受客户端自行修改状态。
         fillMain(main, request, main.getBillStatus());
         saveChildren(main, request);
         refreshMainTotals(main);
         detailCache.evictAfterCommit(reimNo);
-        return new ReimbursementSaveResponse(main.getReimNo(), main.getBillStatus(), main.getBillStatusName());
+        return new ReimbursementSaveResponse(main.getReimNo(), main.getBillStatus(), main.getBillStatusName(), main.getVersion());
     }
 
     /**
@@ -274,7 +281,7 @@ public class ReimbursementServiceImpl implements ReimbursementService {
      */
     @Override
     @Transactional(rollbackFor = Exception.class)
-    public ReimbursementSaveResponse submitDraft(String reimNo) {
+    public ReimbursementSaveResponse submitDraft(String reimNo, Integer version) {
         FkReimMain main = getMainByReimNo(reimNo);
 
         // 只有草稿状态可以提交
@@ -282,20 +289,28 @@ public class ReimbursementServiceImpl implements ReimbursementService {
             throw new StatusConflictException("只有草稿状态可以提交");
         }
 
+        // 乐观锁校验：客户端必须回传详情接口给出的 version
+        if (version != null && !version.equals(main.getVersion())) {
+            throw new StatusConflictException("该报销单已被他人修改，请刷新后重新提交");
+        }
+
         // 详情 VO 中已经包含全部子表数据，将其转换为保存请求后可复用统一校验逻辑。
         // 提交属于写业务，必须直接读取数据库中的最新状态，不能依赖可能即将失效的缓存。
         ReimbursementDetailVO detail = loadDetailFromDatabase(reimNo);
-        ReimbursementSaveRequest request = toSaveRequest(detail);
+        ReimbursementSaveRequest request = detailAssembler.toSaveRequest(detail);
         validateForSubmit(request);
 
-        // 带状态条件的原子更新，防止并发重复提交
+        // 带状态和版本条件的原子更新，防止并发重复提交和乐观锁冲突
+        Integer incrementedVersion = main.getVersion() == null ? 1 : main.getVersion() + 1;
         LambdaUpdateWrapper<FkReimMain> wrapper = new LambdaUpdateWrapper<>();
         wrapper.eq(FkReimMain::getId, main.getId())
                .eq(FkReimMain::getBillStatus, ReimbursementConstants.STATUS_DRAFT)
+               .eq(main.getVersion() != null, FkReimMain::getVersion, main.getVersion())
                .set(FkReimMain::getBillStatus, ReimbursementConstants.STATUS_SUBMITTED)
                .set(FkReimMain::getBillStatusName, ReimbursementConstants.STATUS_SUBMITTED_NAME)
                .set(FkReimMain::getSubmittedAt, LocalDateTime.now())
-               .set(FkReimMain::getUpdatedAt, LocalDateTime.now());
+               .set(FkReimMain::getUpdatedAt, LocalDateTime.now())
+               .set(FkReimMain::getVersion, incrementedVersion);
         boolean updated = mainService.update(wrapper);
         if (!updated) {
             throw new StatusConflictException("提交失败：单据状态已变更，请刷新后重试");
@@ -304,7 +319,7 @@ public class ReimbursementServiceImpl implements ReimbursementService {
         publishEvent("reim.bill.submitted", reimNo);
         detailCache.evictAfterCommit(reimNo);
         return new ReimbursementSaveResponse(reimNo,
-                ReimbursementConstants.STATUS_SUBMITTED, ReimbursementConstants.STATUS_SUBMITTED_NAME);
+                ReimbursementConstants.STATUS_SUBMITTED, ReimbursementConstants.STATUS_SUBMITTED_NAME, incrementedVersion);
     }
 
     /**
@@ -324,7 +339,8 @@ public class ReimbursementServiceImpl implements ReimbursementService {
         FkReimMain target = new FkReimMain();
         BeanUtils.copyProperties(source, target);
         target.setId(null);
-        target.setReimNo(nextReimNo());
+        target.setReimNo(reimNoGenerator.nextReimNo());
+        target.setVersion(1);
         target.setBillStatus(ReimbursementConstants.STATUS_DRAFT);
         target.setBillStatusName(ReimbursementConstants.STATUS_DRAFT_NAME);
         target.setSubmittedAt(null);
@@ -383,7 +399,7 @@ public class ReimbursementServiceImpl implements ReimbursementService {
         refreshMainTotals(target);
         // 新单号可能在创建前被恶意请求并留下空值缓存，事务提交后必须清理。
         detailCache.evictAfterCommit(target.getReimNo());
-        return new ReimbursementSaveResponse(target.getReimNo(), target.getBillStatus(), target.getBillStatusName());
+        return new ReimbursementSaveResponse(target.getReimNo(), target.getBillStatus(), target.getBillStatusName(), target.getVersion());
     }
 
     /**
@@ -434,22 +450,7 @@ public class ReimbursementServiceImpl implements ReimbursementService {
      */
     @Override
     public List<ReimbursementSaveRequest.AllowanceDayRequest> generateAllowanceDays(AllowanceGenerateRequest request) {
-        if (request == null || request.getStartDate() == null || request.getEndDate() == null) {
-            throw new IllegalArgumentException("行程开始日期和结束日期不能为空");
-        }
-        if (request.getEndDate().isBefore(request.getStartDate())) {
-            throw new IllegalArgumentException("行程结束日期不能早于开始日期");
-        }
-        // 补助标准使用目的地城市，不使用出发城市。
-        FkCityAllowance standard = findCityStandard(request.getEndCityCode(), request.getEndCityName(), true);
-        List<ReimbursementSaveRequest.AllowanceDayRequest> days = new ArrayList<>();
-        LocalDate cursor = request.getStartDate();
-        // 逐日生成，直到游标超过结束日期。
-        while (!cursor.isAfter(request.getEndDate())) {
-            days.add(toAllowanceDayRequest(cursor, standard));
-            cursor = cursor.plusDays(1);
-        }
-        return days;
+        return allowanceCalculator.generateAllowanceDays(request);
     }
 
     /** 查询全部城市标准，按城市等级、城市名称升序返回。 */
@@ -491,7 +492,7 @@ public class ReimbursementServiceImpl implements ReimbursementService {
                 .filter(item -> item.getCreatedAt() != null)
                 .collect(Collectors.groupingBy(item -> item.getCreatedAt().format(DateTimeFormatter.ofPattern("yyyy-MM")),
                         LinkedHashMap::new,
-                        Collectors.mapping(item -> nvl(item.getAllowanceAmount()), Collectors.reducing(ZERO, BigDecimal::add))));
+                        Collectors.mapping(item -> allowanceCalculator.nvl(item.getAllowanceAmount()), Collectors.reducing(ZERO, BigDecimal::add))));
         monthMap.forEach((month, amount) -> vo.getMonthlyAmounts().add(new PersonalStatisticsVO.MonthlyAmount(month, amount)));
 
         // 一次查询该人员所有报销单的公司分摊，再按公司名称汇总，供饼图使用。
@@ -503,11 +504,11 @@ public class ReimbursementServiceImpl implements ReimbursementService {
             Map<String, BigDecimal> companyMap = allocations.stream()
                     .collect(Collectors.groupingBy(FkReimAllocation::getAllocationOwnerName,
                             LinkedHashMap::new,
-                            Collectors.mapping(item -> nvl(item.getAllocationAmount()), Collectors.reducing(ZERO, BigDecimal::add))));
+                            Collectors.mapping(item -> allocationCalculator.nvl(item.getAllocationAmount()), Collectors.reducing(ZERO, BigDecimal::add))));
             companyMap.forEach((name, amount) -> vo.getCompanyShares().add(new PersonalStatisticsVO.CompanyShare(name, amount)));
         }
         // mains 已倒序排列，前 10 条就是最近报销单。
-        vo.setRecentBills(mains.stream().limit(10).map(this::toPageVO).collect(Collectors.toList()));
+        vo.setRecentBills(mains.stream().limit(10).map(detailAssembler::toPageVO).collect(Collectors.toList()));
         return vo;
     }
 
@@ -522,7 +523,7 @@ public class ReimbursementServiceImpl implements ReimbursementService {
         }
         FkReimMain main = new FkReimMain();
         // 单号只能由后端生成，避免客户端伪造或重复。
-        main.setReimNo(nextReimNo());
+        main.setReimNo(reimNoGenerator.nextReimNo());
         fillMain(main, request, status);
         // 必须先保存主表取得自增 ID，子表才能写入 main_id。
         mainService.save(main);
@@ -531,7 +532,7 @@ public class ReimbursementServiceImpl implements ReimbursementService {
         refreshMainTotals(main);
         // 清除该新单号在创建前可能已经产生的空值缓存。
         detailCache.evictAfterCommit(main.getReimNo());
-        return new ReimbursementSaveResponse(main.getReimNo(), main.getBillStatus(), main.getBillStatusName());
+        return new ReimbursementSaveResponse(main.getReimNo(), main.getBillStatus(), main.getBillStatusName(), main.getVersion());
     }
 
     /**
@@ -561,14 +562,20 @@ public class ReimbursementServiceImpl implements ReimbursementService {
         if (main.getCreatedAt() == null) {
             main.setCreatedAt(now);
         }
+        // 乐观锁版本号管理：新建单据版本从 1 开始，每次更新递增
+        if (main.getVersion() == null) {
+            main.setVersion(1);
+        } else {
+            main.setVersion(main.getVersion() + 1);
+        }
         main.setUpdatedAt(now);
         if (ReimbursementConstants.STATUS_SUBMITTED.equals(status) && main.getSubmittedAt() == null) {
             main.setSubmittedAt(now);
         }
-        main.setAllowanceAmount(nvl(main.getAllowanceAmount()));
-        main.setMealAmount(nvl(main.getMealAmount()));
-        main.setTrafficAmount(nvl(main.getTrafficAmount()));
-        main.setCommunicationAmount(nvl(main.getCommunicationAmount()));
+        main.setAllowanceAmount(allowanceCalculator.nvl(main.getAllowanceAmount()));
+        main.setMealAmount(allowanceCalculator.nvl(main.getMealAmount()));
+        main.setTrafficAmount(allowanceCalculator.nvl(main.getTrafficAmount()));
+        main.setCommunicationAmount(allowanceCalculator.nvl(main.getCommunicationAmount()));
     }
 
     /**
@@ -636,7 +643,7 @@ public class ReimbursementServiceImpl implements ReimbursementService {
         }
 
         // 客户端可以绕过页面限制，写库前必须重新校验补助日期和城市。
-        validateAllowanceDaysForItinerary(request, requestedDays);
+        allowanceCalculator.validateAllowanceDaysForItinerary(request, requestedDays);
 
         // 查询当前行程原有的每日明细，用于进行差异同步。
         List<FkReimAllowanceDay> dbDays = allowanceDayService.list(new LambdaQueryWrapper<FkReimAllowanceDay>().eq(FkReimAllowanceDay::getItineraryId, itinerary.getId()));
@@ -644,7 +651,7 @@ public class ReimbursementServiceImpl implements ReimbursementService {
         Set<Long> keepIds = new HashSet<>();
         for (ReimbursementSaveRequest.AllowanceDayRequest dayRequest : requestedDays) {
             FkReimAllowanceDay day = dayRequest.getId() != null && dbDayMap.containsKey(dayRequest.getId()) ? dbDayMap.get(dayRequest.getId()) : new FkReimAllowanceDay();
-            fillAllowanceDay(day, main.getId(), itinerary.getId(), dayRequest);
+            allowanceCalculator.fillAllowanceDay(day, main.getId(), itinerary.getId(), dayRequest);
             if (day.getId() == null) {
                 allowanceDayService.save(day);
             } else {
@@ -678,7 +685,9 @@ public class ReimbursementServiceImpl implements ReimbursementService {
                 continue;
             }
             // 草稿虽可不完整，也不能写入负金额或超过 100% 的单行比例。
-            validateAllocationAmount(normalizeRatio(request.getAllocationRatio()), nvl(request.getAllocationAmount()));
+            allocationCalculator.validateDraftAllocation(
+                    allocationCalculator.normalizeRatio(request.getAllocationRatio()),
+                    allocationCalculator.nvl(request.getAllocationAmount()));
             FkReimAllocation allocation = request.getId() != null && dbMap.containsKey(request.getId()) ? dbMap.get(request.getId()) : new FkReimAllocation();
             fillAllocation(allocation, main.getId(), request, index++);
             if (allocation.getId() == null) {
@@ -705,9 +714,9 @@ public class ReimbursementServiceImpl implements ReimbursementService {
         // 主表金额只从已落库的每日补助重新汇总，不使用客户端传入的合计值。
         List<FkReimAllowanceDay> days = allowanceDayService.list(new LambdaQueryWrapper<FkReimAllowanceDay>().eq(FkReimAllowanceDay::getMainId, main.getId()));
         // 分别汇总三类补助，再得到整张报销单的补助总金额。
-        BigDecimal mealAmount = sum(days.stream().map(FkReimAllowanceDay::getMealAmount).collect(Collectors.toList()));
-        BigDecimal trafficAmount = sum(days.stream().map(FkReimAllowanceDay::getTrafficAmount).collect(Collectors.toList()));
-        BigDecimal communicationAmount = sum(days.stream().map(FkReimAllowanceDay::getCommunicationAmount).collect(Collectors.toList()));
+        BigDecimal mealAmount = allowanceCalculator.sum(days.stream().map(FkReimAllowanceDay::getMealAmount).collect(Collectors.toList()));
+        BigDecimal trafficAmount = allowanceCalculator.sum(days.stream().map(FkReimAllowanceDay::getTrafficAmount).collect(Collectors.toList()));
+        BigDecimal communicationAmount = allowanceCalculator.sum(days.stream().map(FkReimAllowanceDay::getCommunicationAmount).collect(Collectors.toList()));
         BigDecimal total = mealAmount.add(trafficAmount).add(communicationAmount).setScale(2, RoundingMode.HALF_UP);
 
         // 查询分摊表并提取不同归属类型的名称，写入主表冗余字段以优化列表查询。
@@ -748,7 +757,7 @@ public class ReimbursementServiceImpl implements ReimbursementService {
     private void validateForSubmit(ReimbursementSaveRequest request) {
         // 单字段必填校验已由 Bean Validation（SubmitGroup）接管，此处仅做跨字段/跨行/需查数据库的校验。
         request.getItineraries().forEach(this::validateItineraryForSubmit);
-        validateAllocationsForSubmit(request.getAllocations(), estimateTotalAmount(request));
+        allocationCalculator.validateForSubmit(request.getAllocations(), allowanceCalculator.estimateTotalAmount(request));
     }
 
     /**
@@ -768,129 +777,12 @@ public class ReimbursementServiceImpl implements ReimbursementService {
             generateRequest.setEndCityName(item.getEndCityName());
             generateRequest.setStartDate(item.getStartDate());
             generateRequest.setEndDate(item.getEndDate());
-            days = generateAllowanceDays(generateRequest);
+            days = allowanceCalculator.generateAllowanceDays(generateRequest);
             item.setAllowanceDays(days);
         }
-        validateAllowanceDaysForItinerary(item, days);
+        allowanceCalculator.validateAllowanceDaysForItinerary(item, days);
         // 使用临时 Entity 触发统一金额校验，并把标准金额及日合计回写到请求对象。
-        days.forEach(day -> fillAllowanceDay(new FkReimAllowanceDay(), 0L, 0L, day));
-    }
-
-    /**
-     * 校验一条行程下的每日补助边界。
-     * 客户端可以直接修改请求，因此日期范围、日期唯一性和补助城市都必须由后端确认。
-     */
-    private void validateAllowanceDaysForItinerary(ReimbursementSaveRequest.ItineraryRequest itinerary,
-                                                   List<ReimbursementSaveRequest.AllowanceDayRequest> days) {
-        if (days == null) {
-            return;
-        }
-
-        // 行程目的地是补助城市的唯一依据，不能采用每日明细中由客户端自行指定的其他城市。
-        FkCityAllowance destinationStandard = findCityStandard(
-                itinerary.getEndCityCode(),
-                itinerary.getEndCityName(),
-                true
-        );
-        Set<LocalDate> allowanceDates = new HashSet<>();
-
-        for (ReimbursementSaveRequest.AllowanceDayRequest day : days) {
-            if (day == null || day.getAllowanceDate() == null) {
-                throw new IllegalArgumentException("每日补助日期不能为空");
-            }
-            if (day.getAllowanceDate().isBefore(itinerary.getStartDate())
-                    || day.getAllowanceDate().isAfter(itinerary.getEndDate())) {
-                throw new IllegalArgumentException("每日补助日期必须在行程日期范围内：" + day.getAllowanceDate());
-            }
-            if (!allowanceDates.add(day.getAllowanceDate())) {
-                throw new IllegalArgumentException("同一行程的每日补助日期不能重复：" + day.getAllowanceDate());
-            }
-
-            boolean codeMismatch = StringUtils.hasText(day.getCityCode())
-                    && !Objects.equals(destinationStandard.getCityCode(), day.getCityCode());
-            boolean nameMismatch = StringUtils.hasText(day.getCityName())
-                    && !Objects.equals(destinationStandard.getCityName(), day.getCityName());
-            if (codeMismatch || nameMismatch) {
-                throw new IllegalArgumentException("每日补助城市必须与行程目的地一致：" + day.getAllowanceDate());
-            }
-
-            // 校验通过后写入权威城市信息，后续金额校验只会使用目的地对应的数据库标准。
-            day.setCityCode(destinationStandard.getCityCode());
-            day.setCityName(destinationStandard.getCityName());
-            day.setCityLevel(destinationStandard.getCityLevel());
-        }
-    }
-
-    /**
-     * 校验正式提交时的费用分摊。
-     *
-     * <p>除单行边界外，还要求所有比例合计为 100%，所有金额合计等于
-     * 后端计算的报销总金额。金额允许 0.01 元的四舍五入误差。</p>
-     */
-    private void validateAllocationsForSubmit(List<ReimbursementSaveRequest.AllocationRequest> allocations, BigDecimal totalAmount) {
-        if (allocations == null || allocations.isEmpty()) {
-            throw new IllegalArgumentException("费用归属及分摊不能为空");
-        }
-        BigDecimal ratioTotal = ZERO;
-        BigDecimal amountTotal = ZERO;
-        for (ReimbursementSaveRequest.AllocationRequest allocation : allocations) {
-            if (!StringUtils.hasText(allocation.getAllocationOwnerName())) {
-                throw new IllegalArgumentException("分摊归属名称不能为空");
-            }
-            BigDecimal ratio = normalizeRatio(allocation.getAllocationRatio());
-            BigDecimal amount = nvl(allocation.getAllocationAmount());
-            validateAllocationAmount(ratio, amount);
-            // 前端未计算金额时，后端可根据总额和比例补算该行金额。
-            if (amount.compareTo(ZERO) == 0 && totalAmount.compareTo(ZERO) > 0) {
-                amount = totalAmount.multiply(ratio).setScale(2, RoundingMode.HALF_UP);
-                allocation.setAllocationAmount(amount);
-            }
-            allocation.setAllocationRatio(ratio);
-            ratioTotal = ratioTotal.add(ratio);
-            amountTotal = amountTotal.add(amount);
-        }
-        if (ratioTotal.subtract(BigDecimal.ONE).abs().compareTo(new BigDecimal("0.000001")) > 0) {
-            throw new IllegalArgumentException("分摊比例合计必须为100%");
-        }
-        if (amountTotal.subtract(totalAmount).abs().compareTo(new BigDecimal("0.01")) > 0) {
-            throw new IllegalArgumentException("分摊金额合计必须等于报销总金额");
-        }
-    }
-
-    /**
-     * 即使草稿允许不完整，金额和比例也不能保存为负数或越界值。
-     */
-    private void validateAllocationAmount(BigDecimal ratio, BigDecimal amount) {
-        if (ratio.compareTo(BigDecimal.ZERO) < 0 || ratio.compareTo(BigDecimal.ONE) > 0) {
-            throw new IllegalArgumentException("单条分摊比例必须在0到100%之间");
-        }
-        if (amount.compareTo(BigDecimal.ZERO) < 0) {
-            throw new IllegalArgumentException("分摊金额不能小于0");
-        }
-    }
-
-    /**
-     * 根据请求中的每日补助估算报销总额，供分摊校验使用。
-     *
-     * <p>每一天都会再次读取城市标准并校验实报金额，因此不使用客户端
-     * 直接传入的 dayAmount。</p>
-     */
-    private BigDecimal estimateTotalAmount(ReimbursementSaveRequest request) {
-        if (request.getItineraries() == null) {
-            return ZERO;
-        }
-        // 分摊校验使用后端逐日校验后得到的金额，不使用客户端提交的 dayAmount 或主表总额。
-        List<BigDecimal> values = new ArrayList<>();
-        request.getItineraries().forEach(itinerary -> {
-            List<ReimbursementSaveRequest.AllowanceDayRequest> days = itinerary.getAllowanceDays();
-            if (days != null) {
-                days.forEach(day -> {
-                    fillAllowanceDay(new FkReimAllowanceDay(), 0L, 0L, day);
-                    values.add(nvl(day.getDayAmount()));
-                });
-            }
-        });
-        return sum(values);
+        days.forEach(day -> allowanceCalculator.fillAllowanceDay(new FkReimAllowanceDay(), 0L, 0L, day));
     }
 
     /**
@@ -918,54 +810,6 @@ public class ReimbursementServiceImpl implements ReimbursementService {
     }
 
     /**
-     * 校验并填充一条每日补助实体。
-     *
-     * <p>城市等级及标准金额全部取自数据库；用户只能取消补助或在标准范围内
-     * 调低实报金额。当日合计也由后端重新计算。</p>
-     */
-    private void fillAllowanceDay(FkReimAllowanceDay day, Long mainId, Long itineraryId, ReimbursementSaveRequest.AllowanceDayRequest request) {
-        // 标准金额始终从城市标准表读取，客户端传入的 standard 和 dayAmount 均不可信。
-        FkCityAllowance standard = findCityStandard(request.getCityCode(), request.getCityName(), true);
-        LocalDateTime now = LocalDateTime.now();
-        BigDecimal meal = checkedAmount(request.getMealSelected(), request.getMealAmount(), standard.getMealStandard(), "餐补");
-        BigDecimal traffic = checkedAmount(request.getTrafficSelected(), request.getTrafficAmount(), standard.getTrafficStandard(), "交通补助");
-        BigDecimal communication = checkedAmount(request.getCommunicationSelected(), request.getCommunicationAmount(), standard.getCommunicationStandard(), "通讯补助");
-        day.setMainId(mainId);
-        day.setItineraryId(itineraryId);
-        day.setAllowanceDate(request.getAllowanceDate());
-        day.setWeekName(StringUtils.hasText(request.getWeekName()) ? request.getWeekName() : weekName(request.getAllowanceDate().getDayOfWeek()));
-        day.setCityCode(standard.getCityCode());
-        day.setCityName(standard.getCityName());
-        day.setCityLevel(standard.getCityLevel());
-        day.setMealStandard(nvl(standard.getMealStandard()));
-        day.setMealSelected(selected(request.getMealSelected()));
-        day.setMealAmount(meal);
-        day.setTrafficStandard(nvl(standard.getTrafficStandard()));
-        day.setTrafficSelected(selected(request.getTrafficSelected()));
-        day.setTrafficAmount(traffic);
-        day.setCommunicationStandard(nvl(standard.getCommunicationStandard()));
-        day.setCommunicationSelected(selected(request.getCommunicationSelected()));
-        day.setCommunicationAmount(communication);
-        day.setDayAmount(meal.add(traffic).add(communication).setScale(2, RoundingMode.HALF_UP));
-        if (day.getCreatedAt() == null) {
-            day.setCreatedAt(now);
-        }
-        day.setUpdatedAt(now);
-
-        // 将后端采用的权威值回写请求对象，后续总额估算和保存使用同一结果。
-        request.setCityCode(day.getCityCode());
-        request.setCityName(day.getCityName());
-        request.setCityLevel(day.getCityLevel());
-        request.setMealStandard(day.getMealStandard());
-        request.setMealAmount(day.getMealAmount());
-        request.setTrafficStandard(day.getTrafficStandard());
-        request.setTrafficAmount(day.getTrafficAmount());
-        request.setCommunicationStandard(day.getCommunicationStandard());
-        request.setCommunicationAmount(day.getCommunicationAmount());
-        request.setDayAmount(day.getDayAmount());
-    }
-
-    /**
      * 把费用分摊请求写入实体，并统一比例精度和默认排序号。
      */
     private void fillAllocation(FkReimAllocation allocation, Long mainId, ReimbursementSaveRequest.AllocationRequest request, int index) {
@@ -977,110 +821,13 @@ public class ReimbursementServiceImpl implements ReimbursementService {
         allocation.setAllocationOwnerName(text(request.getAllocationOwnerName()));
         allocation.setBusinessId(text(request.getBusinessId()));
         allocation.setBusinessName(text(request.getBusinessName()));
-        allocation.setAllocationRatio(normalizeRatio(request.getAllocationRatio()));
-        allocation.setAllocationAmount(nvl(request.getAllocationAmount()));
+        allocation.setAllocationRatio(allocationCalculator.normalizeRatio(request.getAllocationRatio()));
+        allocation.setAllocationAmount(allocationCalculator.nvl(request.getAllocationAmount()));
         allocation.setSortNo(request.getSortNo() == null ? index : request.getSortNo());
         if (allocation.getCreatedAt() == null) {
             allocation.setCreatedAt(now);
         }
         allocation.setUpdatedAt(now);
-    }
-
-    /**
-     * 根据城市编码或名称查询补助标准。
-     *
-     * <p>优先使用编码；只有编码为空时才按名称查询。required 为 true 时，
-     * 查询不到标准会抛出业务异常，防止使用客户端自带标准继续计算。</p>
-     */
-    private FkCityAllowance findCityStandard(String cityCode, String cityName, boolean required) {
-        LambdaQueryWrapper<FkCityAllowance> wrapper = new LambdaQueryWrapper<FkCityAllowance>()
-                .eq(StringUtils.hasText(cityCode), FkCityAllowance::getCityCode, cityCode)
-                .or(!StringUtils.hasText(cityCode) && StringUtils.hasText(cityName), w -> w.eq(FkCityAllowance::getCityName, cityName));
-        FkCityAllowance standard = cityAllowanceService.getOne(wrapper, false);
-        if (standard == null && required) {
-            throw new IllegalArgumentException("未找到城市补助标准：" + (StringUtils.hasText(cityName) ? cityName : cityCode));
-        }
-        return standard;
-    }
-
-    /**
-     * 根据一天日期和城市标准生成默认全选的每日补助请求对象。
-     */
-    private ReimbursementSaveRequest.AllowanceDayRequest toAllowanceDayRequest(LocalDate date, FkCityAllowance standard) {
-        ReimbursementSaveRequest.AllowanceDayRequest day = new ReimbursementSaveRequest.AllowanceDayRequest();
-        day.setAllowanceDate(date);
-        day.setWeekName(weekName(date.getDayOfWeek()));
-        day.setCityCode(standard.getCityCode());
-        day.setCityName(standard.getCityName());
-        day.setCityLevel(standard.getCityLevel());
-        day.setMealStandard(nvl(standard.getMealStandard()));
-        day.setMealSelected(1);
-        day.setMealAmount(nvl(standard.getMealStandard()));
-        day.setTrafficStandard(nvl(standard.getTrafficStandard()));
-        day.setTrafficSelected(1);
-        day.setTrafficAmount(nvl(standard.getTrafficStandard()));
-        day.setCommunicationStandard(nvl(standard.getCommunicationStandard()));
-        day.setCommunicationSelected(1);
-        day.setCommunicationAmount(nvl(standard.getCommunicationStandard()));
-        day.setDayAmount(day.getMealAmount().add(day.getTrafficAmount()).add(day.getCommunicationAmount()).setScale(2, RoundingMode.HALF_UP));
-        return day;
-    }
-
-    /** 将主表实体转换为分页列表返回对象。 */
-    private ReimbursementPageVO toPageVO(FkReimMain main) {
-        ReimbursementPageVO vo = new ReimbursementPageVO();
-        BeanUtils.copyProperties(main, vo);
-        return vo;
-    }
-
-    /** 将行程实体及其每日补助组装为详情中的嵌套行程对象。 */
-    private ReimbursementDetailVO.ItineraryVO toItineraryVO(FkReimItinerary itinerary, List<FkReimAllowanceDay> days) {
-        ReimbursementDetailVO.ItineraryVO vo = new ReimbursementDetailVO.ItineraryVO();
-        BeanUtils.copyProperties(itinerary, vo);
-        if (days != null) {
-            vo.setAllowanceDays(days.stream().map(this::toAllowanceDayVO).collect(Collectors.toList()));
-        }
-        return vo;
-    }
-
-    /** 将每日补助实体转换为详情返回对象。 */
-    private ReimbursementDetailVO.AllowanceDayVO toAllowanceDayVO(FkReimAllowanceDay day) {
-        ReimbursementDetailVO.AllowanceDayVO vo = new ReimbursementDetailVO.AllowanceDayVO();
-        BeanUtils.copyProperties(day, vo);
-        return vo;
-    }
-
-    /** 将分摊实体转换为详情返回对象。 */
-    private ReimbursementDetailVO.AllocationVO toAllocationVO(FkReimAllocation allocation) {
-        ReimbursementDetailVO.AllocationVO vo = new ReimbursementDetailVO.AllocationVO();
-        BeanUtils.copyProperties(allocation, vo);
-        return vo;
-    }
-
-    /**
-     * 将详情返回对象还原为保存请求。
-     *
-     * <p>草稿提交接口使用该方法复用创建提交的统一校验逻辑。</p>
-     */
-    private ReimbursementSaveRequest toSaveRequest(ReimbursementDetailVO detail) {
-        ReimbursementSaveRequest request = new ReimbursementSaveRequest();
-        BeanUtils.copyProperties(detail, request);
-        request.setItineraries(detail.getItineraries().stream().map(item -> {
-            ReimbursementSaveRequest.ItineraryRequest itinerary = new ReimbursementSaveRequest.ItineraryRequest();
-            BeanUtils.copyProperties(item, itinerary);
-            itinerary.setAllowanceDays(item.getAllowanceDays().stream().map(day -> {
-                ReimbursementSaveRequest.AllowanceDayRequest requestDay = new ReimbursementSaveRequest.AllowanceDayRequest();
-                BeanUtils.copyProperties(day, requestDay);
-                return requestDay;
-            }).collect(Collectors.toList()));
-            return itinerary;
-        }).collect(Collectors.toList()));
-        request.setAllocations(detail.getAllocations().stream().map(item -> {
-            ReimbursementSaveRequest.AllocationRequest allocation = new ReimbursementSaveRequest.AllocationRequest();
-            BeanUtils.copyProperties(item, allocation);
-            return allocation;
-        }).collect(Collectors.toList()));
-        return request;
     }
 
     /**
@@ -1117,95 +864,9 @@ public class ReimbursementServiceImpl implements ReimbursementService {
                 && item.getEndDate() != null;
     }
 
-    /**
-     * 校验单项补助实报金额。
-     *
-     * <p>未勾选的项目无论客户端传多少都按 0 处理；已勾选项目必须位于
-     * 0 和数据库标准之间。方法返回统一保留两位小数的可信金额。</p>
-     */
-    private BigDecimal checkedAmount(Integer selected, BigDecimal amount, BigDecimal standard, String label) {
-        // 未勾选时强制按 0 计算；勾选时实报金额只能在 0 到数据库标准之间。
-        BigDecimal value = selected(selected) == 1 ? nvl(amount) : ZERO;
-        BigDecimal limit = nvl(standard);
-        if (value.compareTo(ZERO) < 0) {
-            throw new IllegalArgumentException(label + "不能小于0");
-        }
-        if (value.compareTo(limit) > 0) {
-            throw new IllegalArgumentException(label + "不能超过标准金额" + limit);
-        }
-        return value.setScale(2, RoundingMode.HALF_UP);
-    }
-
-    /** 将任意选中值规范化为数据库使用的 0 或 1。 */
-    private int selected(Integer value) {
-        return value != null && value == 1 ? 1 : 0;
-    }
-
-    /**
-     * 统一分摊比例格式。
-     *
-     * <p>接口推荐传 0-1；为兼容旧前端，大于 1 的值按百分数除以 100。</p>
-     */
-    private BigDecimal normalizeRatio(BigDecimal ratio) {
-        if (ratio == null) {
-            return BigDecimal.ZERO;
-        }
-        // 前端已统一传 0-1 小数，后端不再兼容百分数格式
-        return ratio.setScale(6, RoundingMode.HALF_UP);
-    }
-
-    /** 忽略空值后计算金额合计，并统一保留两位小数。 */
-    private BigDecimal sum(List<BigDecimal> values) {
-        return values.stream().filter(Objects::nonNull).reduce(ZERO, BigDecimal::add).setScale(2, RoundingMode.HALF_UP);
-    }
-
-    /** 将空金额转换为 0，并统一保留两位小数。 */
-    private BigDecimal nvl(BigDecimal value) {
-        return value == null ? ZERO : value.setScale(2, RoundingMode.HALF_UP);
-    }
-
     /** 将空字符串字段转换为空串，避免实体中出现不必要的 null。 */
     private String text(String value) {
         return value == null ? "" : value;
-    }
-
-    /** 将 Java 星期枚举转换为页面使用的中文星期名称。 */
-    private String weekName(DayOfWeek dayOfWeek) {
-        Map<DayOfWeek, String> names = new HashMap<>();
-        names.put(DayOfWeek.MONDAY, "星期一");
-        names.put(DayOfWeek.TUESDAY, "星期二");
-        names.put(DayOfWeek.WEDNESDAY, "星期三");
-        names.put(DayOfWeek.THURSDAY, "星期四");
-        names.put(DayOfWeek.FRIDAY, "星期五");
-        names.put(DayOfWeek.SATURDAY, "星期六");
-        names.put(DayOfWeek.SUNDAY, "星期日");
-        return names.get(dayOfWeek);
-    }
-
-    /**
-     * 生成新的报销单号。
-     *
-     * <p>优先使用 Redis 当日自增序列，格式为 CLBXyyyyMMdd0001。
-     * Redis 未配置或暂时不可用时，降级使用毫秒时间戳，保证本地训练环境仍可创建单据。
-     * 数据库中的 reim_no 唯一索引负责最终防重。</p>
-     */
-    private String nextReimNo() {
-        String day = LocalDate.now().format(DateTimeFormatter.BASIC_ISO_DATE);
-        String key = "reim:no:" + day;
-        try {
-            // ObjectProvider 允许应用在没有可用 Redis Bean 时继续启动。
-            StringRedisTemplate redisTemplate = redisTemplateProvider.getIfAvailable();
-            if (redisTemplate != null) {
-                // Redis INCR 是原子操作，多实例同时生成单号时不会取得相同序号。
-                Long seq = redisTemplate.opsForValue().increment(key);
-                if (seq != null) {
-                    return "CLBX" + day + String.format("%04d", seq);
-                }
-            }
-        } catch (Exception ignored) {
-            // 本地训练环境经常没有启动 Redis，异常时进入下方时间戳降级方案。
-        }
-        return "CLBX" + day + DateTimeFormatter.ofPattern("HHmmssSSS").format(LocalDateTime.now());
     }
 
     /**

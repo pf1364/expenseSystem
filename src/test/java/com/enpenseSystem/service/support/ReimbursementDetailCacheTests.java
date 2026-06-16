@@ -1,4 +1,4 @@
-package com.enpenseSystem.service;
+package com.enpenseSystem.service.support;
 
 import com.enpenseSystem.dto.ReimbursementDetailVO;
 import com.fasterxml.jackson.databind.ObjectMapper;
@@ -120,7 +120,7 @@ class ReimbursementDetailCacheTests {
     @Test
     void disabledCacheDoesNotAccessRedis() {
         ReimbursementDetailCache cache = new ReimbursementDetailCache(
-                redisProvider, objectMapper, false, Duration.ofMinutes(10), Duration.ofMinutes(2));
+                cacheClient(), false, Duration.ofMinutes(10), Duration.ofMinutes(2));
 
         assertThat(cache.get(REIM_NO)).isEmpty();
         cache.put(REIM_NO, detail());
@@ -157,7 +157,11 @@ class ReimbursementDetailCacheTests {
 
     private ReimbursementDetailCache enabledCache() {
         return new ReimbursementDetailCache(
-                redisProvider, objectMapper, true, Duration.ofMinutes(10), Duration.ofMinutes(2));
+                cacheClient(), true, Duration.ofMinutes(10), Duration.ofMinutes(2));
+    }
+
+    private CacheClient cacheClient() {
+        return new CacheClient(redisProvider, objectMapper, true);
     }
 
     private ReimbursementDetailVO detail() {
