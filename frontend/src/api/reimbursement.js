@@ -27,9 +27,31 @@ export function updateReimbursement(reimNo, data) {
   return request.put(`/reimbursements/${reimNo}`, data)
 }
 
-/** 提交数据库中已有的草稿。 */
-export function submitDraft(reimNo) {
-  return request.post(`/reimbursements/${reimNo}/submit`)
+/** 提交数据库中已有的草稿。需携带 version 和 lockToken。 */
+export function submitDraft(reimNo, version, lockToken) {
+  return request.post(`/reimbursements/${reimNo}/submit`, { version, lockToken })
+}
+
+// ======================== 编辑锁接口 ========================
+
+/** 尝试获得报销单编辑锁。 */
+export function acquireLock(reimNo) {
+  return request.post(`/reimbursements/${reimNo}/lock`)
+}
+
+/** 续期当前用户的编辑锁。 */
+export function renewLock(reimNo, lockToken) {
+  return request.put(`/reimbursements/${reimNo}/lock`, { lockToken })
+}
+
+/** 释放当前用户的编辑锁。 */
+export function releaseLock(reimNo, lockToken) {
+  return request.delete(`/reimbursements/${reimNo}/lock`, { data: { lockToken } })
+}
+
+/** 查询报销单当前编辑锁状态。 */
+export function getLockInfo(reimNo) {
+  return request.get(`/reimbursements/${reimNo}/lock`)
 }
 
 /** 深度复制报销单为新草稿。 */

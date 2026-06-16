@@ -15,6 +15,7 @@ import com.enpenseSystem.service.support.AllocationCalculator;
 import com.enpenseSystem.service.support.AllowanceCalculator;
 import com.enpenseSystem.service.support.ReimbursementDetailAssembler;
 import com.enpenseSystem.service.support.ReimbursementNoGenerator;
+import com.enpenseSystem.service.support.RedisLockClient;
 import com.enpenseSystem.utils.ReimbursementConstants;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
@@ -66,7 +67,8 @@ class ReimbursementServiceImplDetailCacheTests {
                 new ReimbursementDetailAssembler(),
                 reimNoGenerator,
                 new AllocationCalculator(),
-                new AllowanceCalculator(mock(FkCityAllowanceService.class))
+                new AllowanceCalculator(mock(FkCityAllowanceService.class)),
+                mock(RedisLockClient.class)
         );
     }
 
@@ -165,7 +167,7 @@ class ReimbursementServiceImplDetailCacheTests {
         when(allowanceDayService.list(any(Wrapper.class))).thenReturn(List.of());
         when(allocationService.list(any(Wrapper.class))).thenReturn(List.of());
 
-        assertThatThrownBy(() -> service.submitDraft(REIM_NO, null))
+        assertThatThrownBy(() -> service.submitDraft(REIM_NO, null, null))
                 .isInstanceOf(IllegalArgumentException.class)
                 .hasMessageContaining("费用归属及分摊不能为空");
 

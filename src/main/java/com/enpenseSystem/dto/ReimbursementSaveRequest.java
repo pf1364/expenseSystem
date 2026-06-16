@@ -22,6 +22,7 @@ public class ReimbursementSaveRequest {
 
     private String reimNo; // 报销单号，创建时可为空，更新时必传或从路径获取
     private Integer version; // 乐观锁版本号，更新草稿或提交已有草稿时必须传回详情接口给出的值
+    private String lockToken; // 编辑锁令牌，编辑模式下前端获取锁后回传，用于后端校验锁所有权
 
     @NotBlank(message = "报销标题不能为空", groups = SubmitGroup.class)
     private String title; // 报销标题
