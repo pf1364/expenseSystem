@@ -75,16 +75,16 @@
         <el-table-column label="操作" width="132" align="center">
           <template #default="{ row }">
             <el-tooltip content="查看" placement="top">
-              <el-button class="icon-action" link type="primary" :icon="Reading" @click="open(row.reimNo)" />
+              <el-button class="icon-action" link type="primary" :icon="Reading" @click="view(row.reimNo)" />
             </el-tooltip>
-            <el-tooltip :content="row.billStatus === 'DRAFT' ? '修改' : '非草稿不可修改'" placement="top">
+            <el-tooltip :content="editTooltip(row)" placement="top">
               <el-button
                 class="icon-action"
                 link
-                :type="row.billStatus === 'DRAFT' ? 'primary' : 'info'"
+                :type="row.billStatus === 'DRAFT' && !row.lockHolderName ? 'primary' : 'info'"
                 :icon="EditPen"
-                :disabled="row.billStatus !== 'DRAFT'"
-                @click="open(row.reimNo)"
+                :disabled="row.billStatus !== 'DRAFT' || !!row.lockHolderName"
+                @click="edit(row.reimNo)"
               />
             </el-tooltip>
             <el-dropdown trigger="click" @command="command => handleMore(command, row)">
@@ -101,7 +101,7 @@
         </el-table-column>
         <el-table-column prop="reimNo" label="报销单号" min-width="160">
           <template #default="{ row }">
-            <el-button link type="primary" @click="open(row.reimNo)">{{ row.reimNo }}</el-button>
+            <el-button link type="primary" @click="edit(row.reimNo)">{{ row.reimNo }}</el-button>
           </template>
         </el-table-column>
         <el-table-column prop="billStatusName" label="单据状态" width="100" />
@@ -115,7 +115,7 @@
         <el-table-column prop="businessTypeName" label="业务类型" min-width="130" />
         <el-table-column prop="title" label="报销标题" min-width="180" show-overflow-tooltip>
           <template #default="{ row }">
-            <el-button link type="primary" @click="open(row.reimNo)">{{ row.title }}</el-button>
+            <el-button link type="primary" @click="edit(row.reimNo)">{{ row.title }}</el-button>
           </template>
         </el-table-column>
         <el-table-column prop="reason" label="报销事由" min-width="180" show-overflow-tooltip />
@@ -230,8 +230,18 @@ function reset() {
   load()
 }
 
-function open(reimNo) {
+function view(reimNo) {
   router.push(`/reimbursements/${reimNo}`)
+}
+
+function edit(reimNo) {
+  router.push(`/reimbursements/${reimNo}?edit=true`)
+}
+
+function editTooltip(row) {
+  if (row.lockHolderName) return row.lockHolderName + ' 正在编辑'
+  if (row.billStatus !== 'DRAFT') return '非草稿不可修改'
+  return '修改'
 }
 
 async function handleMore(command, row) {

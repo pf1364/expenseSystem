@@ -29,6 +29,7 @@ import com.enpenseSystem.service.support.ReimbursementDetailAssembler;
 import com.enpenseSystem.service.support.ReimbursementNoGenerator;
 import com.enpenseSystem.service.support.AllocationCalculator;
 import com.enpenseSystem.service.support.AllowanceCalculator;
+import com.enpenseSystem.service.support.RedisLockClient;
 import com.enpenseSystem.utils.ReimbursementConstants;
 import org.springframework.beans.BeanUtils;
 import org.springframework.beans.factory.ObjectProvider;
@@ -95,10 +96,15 @@ public class ReimbursementServiceImpl implements ReimbursementService {
     private final AllocationCalculator allocationCalculator;
     /** 每日补助计算器：负责城市标准查询、补助生成和金额校验。 */
     private final AllowanceCalculator allowanceCalculator;
+    /** Redis 分布式锁客户端：用于编辑锁所有权校验和列表页锁状态查询。 */
+    private final RedisLockClient redisLockClient;
 
     /** 是否启用 Kafka 消息发送，默认关闭。 */
     @Value("${app.kafka.enabled:false}")
     private boolean kafkaEnabled;
+
+    /** 编辑锁 Redis Key 前缀。 */
+    private static final String LOCK_KEY_PREFIX = "reim:lock:";
 
     public ReimbursementServiceImpl(FkReimMainService mainService,
                                     FkReimItineraryService itineraryService,
@@ -110,7 +116,8 @@ public class ReimbursementServiceImpl implements ReimbursementService {
                                     ReimbursementDetailAssembler detailAssembler,
                                     ReimbursementNoGenerator reimNoGenerator,
                                     AllocationCalculator allocationCalculator,
-                                    AllowanceCalculator allowanceCalculator) {
+                                    AllowanceCalculator allowanceCalculator,
+                                    RedisLockClient redisLockClient) {
         this.mainService = mainService;
         this.itineraryService = itineraryService;
         this.allowanceDayService = allowanceDayService;
@@ -122,6 +129,7 @@ public class ReimbursementServiceImpl implements ReimbursementService {
         this.reimNoGenerator = reimNoGenerator;
         this.allocationCalculator = allocationCalculator;
         this.allowanceCalculator = allowanceCalculator;
+        this.redisLockClient = redisLockClient;
     }
 
     /**
@@ -260,6 +268,8 @@ public class ReimbursementServiceImpl implements ReimbursementService {
         if (!ReimbursementConstants.STATUS_DRAFT.equals(main.getBillStatus())) {
             throw new StatusConflictException("只有草稿状态可以修改");
         }
+        // 编辑锁校验：如果存在锁且非当前用户持有，拒绝更新
+        validateLockOwnership(reimNo, request.getLockToken());
         // 乐观锁校验：客户端必须回传详情接口给出的 version，后端比对后拒绝并发冲突的保存。
         if (request.getVersion() != null && !request.getVersion().equals(main.getVersion())) {
             throw new StatusConflictException("该报销单已被他人修改，请刷新后重新编辑");
@@ -281,13 +291,16 @@ public class ReimbursementServiceImpl implements ReimbursementService {
      */
     @Override
     @Transactional(rollbackFor = Exception.class)
-    public ReimbursementSaveResponse submitDraft(String reimNo, Integer version) {
+    public ReimbursementSaveResponse submitDraft(String reimNo, Integer version, String lockToken) {
         FkReimMain main = getMainByReimNo(reimNo);
 
         // 只有草稿状态可以提交
         if (!ReimbursementConstants.STATUS_DRAFT.equals(main.getBillStatus())) {
             throw new StatusConflictException("只有草稿状态可以提交");
         }
+
+        // 编辑锁校验：如果存在锁且非当前用户持有，拒绝提交
+        validateLockOwnership(reimNo, lockToken);
 
         // 乐观锁校验：客户端必须回传详情接口给出的 version
         if (version != null && !version.equals(main.getVersion())) {
@@ -828,6 +841,20 @@ public class ReimbursementServiceImpl implements ReimbursementService {
             allocation.setCreatedAt(now);
         }
         allocation.setUpdatedAt(now);
+    }
+
+    /**
+     * 编辑锁所有权校验：如果 Redis 中存在锁且 lockToken 不匹配，拒绝操作。
+     *
+     * <p>锁不存在（已过期或未获取）时放行；lockToken 为空时仅在锁存在时拒绝。
+     * 该方法为 advisory 校验，真正的数据保护仍由数据库 version 乐观锁兜底。</p>
+     */
+    private void validateLockOwnership(String reimNo, String lockToken) {
+        redisLockClient.readLockInfo(LOCK_KEY_PREFIX + reimNo).ifPresent(lockInfo -> {
+            if (!lockInfo.getLockToken().equals(lockToken)) {
+                throw new StatusConflictException(lockInfo.getOwnerName() + "正在编辑，请稍后再试");
+            }
+        });
     }
 
     /**

@@ -74,7 +74,7 @@ public interface ReimbursementService {
      * @param reimNo 草稿报销单号
      * @return 报销单号及已提交状态
      */
-    ReimbursementSaveResponse submitDraft(String reimNo, Integer version);
+    ReimbursementSaveResponse submitDraft(String reimNo, Integer version, String lockToken);
 
     /**
      * 深度复制一张报销单为新的草稿。

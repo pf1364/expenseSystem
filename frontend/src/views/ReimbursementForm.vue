@@ -57,7 +57,7 @@
 
     <form-section title="补录行程" v-model:expanded="itineraryExpanded">
       <template #actions>
-        <el-button v-if="!readonly" type="primary" :icon="Plus" @click="openItineraryDialog()">补录行程</el-button>
+        <el-button v-if="showActions" type="primary" :icon="Plus" @click="openItineraryDialog()">补录行程</el-button>
       </template>
       <el-table :data="form.itineraries" border>
         <el-table-column label="序号" width="72" align="center">
@@ -73,7 +73,7 @@
           <template #default="{ row }">{{ routeText(row) }}</template>
         </el-table-column>
         <el-table-column prop="description" label="行程说明" min-width="200" show-overflow-tooltip />
-        <el-table-column v-if="!readonly" label="操作" width="126" align="center">
+        <el-table-column v-if="showActions" label="操作" width="126" align="center">
           <template #default="{ row, $index }">
             <el-tooltip content="修改" placement="top">
               <el-button class="icon-action" link type="primary" :icon="EditPen" @click="openItineraryDialog(row, $index)" />
@@ -147,7 +147,7 @@
 
     <form-section title="费用归属及分摊" v-model:expanded="allocationExpanded">
       <template #actions>
-        <el-button v-if="!readonly" type="primary" :icon="Plus" @click="addAllocation">添加一行</el-button>
+        <el-button v-if="showActions" type="primary" :icon="Plus" @click="addAllocation">添加一行</el-button>
       </template>
       <el-table :data="form.allocations" border>
         <el-table-column label="序号" width="72" align="center">
@@ -193,7 +193,7 @@
             <el-input-number v-model="row.allocationAmount" :min="0" :precision="2" :controls="false" disabled />
           </template>
         </el-table-column>
-        <el-table-column v-if="!readonly" label="操作" width="90" align="center">
+        <el-table-column v-if="showActions" label="操作" width="90" align="center">
           <template #default="{ $index }">
             <el-tooltip content="删除" placement="top">
               <el-button class="icon-action" link type="danger" :icon="Delete" @click="removeAllocation($index)" />
@@ -209,9 +209,9 @@
     </form-section>
 
     <div class="form-footer">
-      <el-button :icon="Back" @click="router.push('/reimbursements')">返回</el-button>
-      <el-button v-if="!readonly" :icon="DocumentChecked" @click="saveDraft">保存草稿</el-button>
-      <el-button v-if="!readonly" type="primary" :icon="Upload" @click="submit">提交</el-button>
+      <el-button :icon="Back" @click="goBack">返回</el-button>
+      <el-button v-if="showActions" :icon="DocumentChecked" @click="saveDraft">保存草稿</el-button>
+      <el-button v-if="showActions" type="primary" :icon="Upload" @click="submit">提交</el-button>
     </div>
 
     <el-dialog v-model="itineraryDialog.visible" title="补录行程" width="760px" destroy-on-close>
@@ -344,18 +344,19 @@
 </template>
 
 <script setup>
-import { computed, defineComponent, h, onMounted, reactive, ref } from 'vue'
-import { useRouter } from 'vue-router'
+import { computed, defineComponent, h, onBeforeUnmount, onMounted, reactive, ref } from 'vue'
+import { onBeforeRouteLeave, useRoute, useRouter } from 'vue-router'
 import { ElButton, ElCheckbox, ElInputNumber, ElMessage, ElMessageBox } from 'element-plus'
 import { Back, CopyDocument, Delete, DocumentChecked, EditPen, Plus, Refresh, Upload } from '@element-plus/icons-vue'
 import { businessTypeTree, businessTypes, companies, departments, employees, fallbackCities, findBusinessType } from '../data/options'
-import { createAndSubmit, createDraft, generateAllowanceDays, getReimbursement, listCityAllowances, submitDraft, updateReimbursement } from '../api/reimbursement'
+import { acquireLock, createAndSubmit, createDraft, generateAllowanceDays, getReimbursement, listCityAllowances, releaseLock, renewLock, submitDraft, updateReimbursement } from '../api/reimbursement'
 
 const props = defineProps({
   reimNo: String
 })
 
 const router = useRouter()
+const route = useRoute()
 
 // 城市标准由后端加载；人员、部门、公司和业务类型按训练营要求使用前端固定选项。
 const cities = ref([])
@@ -390,6 +391,20 @@ const allowanceDialog = reactive({
 
 // 已存在且状态不是草稿的报销单只允许查看。
 const readonly = computed(() => Boolean(form.reimNo && form.billStatus && form.billStatus !== 'DRAFT'))
+
+// 三种模式：新建、查看、编辑。编辑模式由 ?edit=true 触发。
+const isNew = computed(() => !props.reimNo)
+const isEditMode = computed(() => !!props.reimNo && route.query.edit === 'true')
+const isViewMode = computed(() => !!props.reimNo && route.query.edit !== 'true')
+
+// 编辑模式或新建模式才显示操作按钮。
+const showActions = computed(() => isNew.value || isEditMode.value)
+
+// 编辑锁相关状态
+const lockToken = ref(null)
+const heartbeatTimer = ref(null)
+const heartbeatFailCount = ref(0)
+const HEARTBEAT_INTERVAL = 2 * 60 * 1000 // 2分钟续期一次
 
 // 页面合计用于实时交互展示；最终金额仍由后端按城市标准重新校验和汇总。
 const allAllowanceDays = computed(() => form.itineraries.flatMap(item => item.allowanceDays || []))
@@ -497,6 +512,7 @@ function emptyForm() {
   return {
     reimNo: '',
     billStatus: '',
+    version: null,
     title: '',
     reimburserId: '',
     reimburserNo: '',
@@ -961,6 +977,8 @@ function validateClient() {
 function payload() {
   // 页面比例按百分数展示，发送前转换为后端和数据库使用的 0-1。
   const data = JSON.parse(JSON.stringify(form))
+  // 携带编辑锁令牌供后端校验
+  data.lockToken = lockToken.value
   data.allocations = (data.allocations || []).map(item => ({
     ...item,
     allocationOwnerType: 'COMPANY',
@@ -974,6 +992,10 @@ async function saveDraft() {
   if (!validateClient()) return
   recalcAllocations()
   const data = form.reimNo ? await updateReimbursement(form.reimNo, payload()) : await createDraft(payload())
+  // 更新本地乐观锁版本号
+  if (data.version != null) {
+    form.version = data.version
+  }
   ElMessage.success('草稿已保存')
   if (!form.reimNo) {
     form.reimNo = data.reimNo
@@ -987,8 +1009,9 @@ async function submit() {
   if (!validateClient()) return
   recalcAllocations()
   if (form.reimNo) {
-    await updateReimbursement(form.reimNo, payload())
-    await submitDraft(form.reimNo)
+    const updateResult = await updateReimbursement(form.reimNo, payload())
+    // 使用更新后的 version 和锁令牌提交
+    await submitDraft(form.reimNo, updateResult.version, lockToken.value)
   } else {
     await createAndSubmit(payload())
   }
@@ -1013,7 +1036,97 @@ async function loadDetail() {
   recalcAllocations()
 }
 
+// ======================== 编辑锁生命周期 ========================
+
+/** 进入编辑模式时尝试获取 Redis 编辑锁。成功则存 token 并启心跳，失败则切回查看模式。 */
+async function acquireEditLock() {
+  try {
+    const lockVO = await acquireLock(props.reimNo)
+    if (lockVO.acquired) {
+      lockToken.value = lockVO.lockToken
+      heartbeatFailCount.value = 0
+      startHeartbeat()
+      return
+    }
+    // 锁被他人持有：提示并切回查看模式
+    ElMessage.warning(lockVO.message || `${lockVO.ownerName} 正在编辑`)
+    router.replace(`/reimbursements/${props.reimNo}`)
+  } catch (error) {
+    // 网络错误等异常：允许继续编辑但提示无锁保护
+    ElMessage.warning('无法获取编辑锁，编辑冲突将不会被检测')
+  }
+}
+
+/** 每 2 分钟续期一次编辑锁。 */
+function startHeartbeat() {
+  stopHeartbeat()
+  heartbeatTimer.value = setInterval(async () => {
+    try {
+      const result = await renewLock(props.reimNo, lockToken.value)
+      if (result.acquired === true) {
+        heartbeatFailCount.value = 0
+      } else {
+        handleHeartbeatFailure()
+      }
+    } catch (error) {
+      handleHeartbeatFailure()
+    }
+  }, HEARTBEAT_INTERVAL)
+}
+
+function stopHeartbeat() {
+  if (heartbeatTimer.value) {
+    clearInterval(heartbeatTimer.value)
+    heartbeatTimer.value = null
+  }
+}
+
+/** 续期连续失败 2 次后切换为只读模式。 */
+function handleHeartbeatFailure() {
+  heartbeatFailCount.value++
+  if (heartbeatFailCount.value === 1) {
+    ElMessage.warning('连接异常，正在重试...')
+  } else if (heartbeatFailCount.value >= 2) {
+    stopHeartbeat()
+    ElMessage.error('编辑锁已丢失，页面将切换为只读模式')
+    lockToken.value = null
+    router.replace(`/reimbursements/${props.reimNo}`)
+  }
+}
+
+/** 释放当前持有的编辑锁。 */
+async function doReleaseLock() {
+  if (lockToken.value && props.reimNo) {
+    stopHeartbeat()
+    try {
+      await releaseLock(props.reimNo, lockToken.value)
+    } catch (error) {
+      // 静默失败，锁会在 TTL 后自然过期
+    }
+    lockToken.value = null
+  }
+}
+
+/** 返回按钮：先释放锁再导航回列表。 */
+async function goBack() {
+  await doReleaseLock()
+  router.push('/reimbursements')
+}
+
+/** 浏览器关闭/刷新时使用 sendBeacon 释放锁。 */
+function handleBeforeUnload() {
+  if (lockToken.value && props.reimNo) {
+    navigator.sendBeacon(
+      `/api/reimbursements/${props.reimNo}/lock`,
+      JSON.stringify({ lockToken: lockToken.value })
+    )
+  }
+}
+
 onMounted(async () => {
+  // 注册页面关闭时的锁释放
+  window.addEventListener('beforeunload', handleBeforeUnload)
+
   // 先加载城市标准，再根据路由参数决定是否回显已有报销单。
   try {
     const remoteCities = await listCityAllowances()
@@ -1022,6 +1135,23 @@ onMounted(async () => {
     cities.value = fallbackCities
   }
   await loadDetail()
+
+  // 编辑模式且草稿状态：尝试获取编辑锁
+  if (isEditMode.value && form.billStatus === 'DRAFT') {
+    await acquireEditLock()
+  }
+})
+
+// 路由离开时释放锁
+onBeforeRouteLeave(async (to, from, next) => {
+  await doReleaseLock()
+  next()
+})
+
+// 组件卸载时释放锁并清理事件监听
+onBeforeUnmount(() => {
+  doReleaseLock()
+  window.removeEventListener('beforeunload', handleBeforeUnload)
 })
 </script>
 

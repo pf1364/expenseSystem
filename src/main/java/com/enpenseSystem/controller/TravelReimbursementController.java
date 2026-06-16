@@ -80,12 +80,13 @@ public class TravelReimbursementController {
         return Result.ok(reimbursementService.update(reimNo, request));
     }
 
-    /** 对数据库中已经存在的草稿执行完整校验并提交。前端需回传详情接口给出的 version。 */
+    /** 对数据库中已经存在的草稿执行完整校验并提交。前端需回传详情接口给出的 version 和 lockToken。 */
     @PostMapping("/{reimNo}/submit")
     public Result submitDraft(@PathVariable String reimNo,
                                @RequestBody(required = false) ReimbursementVersionRequest request) {
         Integer version = request != null ? request.getVersion() : null;
-        return Result.ok(reimbursementService.submitDraft(reimNo, version));
+        String lockToken = request != null ? request.getLockToken() : null;
+        return Result.ok(reimbursementService.submitDraft(reimNo, version, lockToken));
     }
 
     /** 将任意现有报销单深度复制为一张新的草稿。 */

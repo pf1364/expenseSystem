@@ -12,5 +12,6 @@ import lombok.Data;
 public class ReimbursementVersionRequest {
 
     private Integer version; // 当前页面持有的乐观锁版本号
+    private String lockToken; // 编辑锁令牌，用于后端校验当前用户是否持有编辑锁
 }
 
