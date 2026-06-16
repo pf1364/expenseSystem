@@ -19,6 +19,7 @@ public class ReimbursementDetailVO {
 
     private Long id; // 报销单主表 ID
     private String reimNo; // 唯一报销单号
+    private Integer version; // 乐观锁版本号，编辑保存/提交时需要原样带回
     private String billStatus; // 单据状态编码
     private String billStatusName; // 单据状态中文名
     private String billType; // 单据类型编码

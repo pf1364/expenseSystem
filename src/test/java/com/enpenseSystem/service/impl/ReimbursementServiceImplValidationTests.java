@@ -2,16 +2,11 @@ package com.enpenseSystem.service.impl;
 
 import com.enpenseSystem.dto.ReimbursementSaveRequest;
 import com.enpenseSystem.entity.FkCityAllowance;
+import com.enpenseSystem.entity.FkReimAllowanceDay;
 import com.enpenseSystem.service.FkCityAllowanceService;
-import com.enpenseSystem.service.FkReimAllocationService;
-import com.enpenseSystem.service.FkReimAllowanceDayService;
-import com.enpenseSystem.service.FkReimItineraryService;
-import com.enpenseSystem.service.FkReimMainService;
-import com.enpenseSystem.service.ReimbursementDetailCache;
+import com.enpenseSystem.service.support.AllowanceCalculator;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
-import org.springframework.beans.factory.ObjectProvider;
-import org.springframework.test.util.ReflectionTestUtils;
 
 import java.math.BigDecimal;
 import java.time.LocalDate;
@@ -25,10 +20,9 @@ import static org.mockito.Mockito.when;
 
 class ReimbursementServiceImplValidationTests {
 
-    private ReimbursementServiceImpl service;
+    private AllowanceCalculator allowanceCalculator;
 
     @BeforeEach
-    @SuppressWarnings("unchecked")
     void setUp() {
         FkCityAllowanceService cityAllowanceService = mock(FkCityAllowanceService.class);
         FkCityAllowance beijing = new FkCityAllowance();
@@ -40,16 +34,7 @@ class ReimbursementServiceImplValidationTests {
         beijing.setCommunicationStandard(new BigDecimal("40.00"));
         when(cityAllowanceService.getOne(any(), eq(false))).thenReturn(beijing);
 
-        service = new ReimbursementServiceImpl(
-                mock(FkReimMainService.class),
-                mock(FkReimItineraryService.class),
-                mock(FkReimAllowanceDayService.class),
-                mock(FkReimAllocationService.class),
-                cityAllowanceService,
-                mock(ObjectProvider.class),
-                mock(ObjectProvider.class),
-                mock(ReimbursementDetailCache.class)
-        );
+        allowanceCalculator = new AllowanceCalculator(cityAllowanceService);
     }
 
     @Test
@@ -91,20 +76,14 @@ class ReimbursementServiceImplValidationTests {
         day.setTrafficSelected(0);
         day.setCommunicationSelected(0);
 
-        assertThatThrownBy(() -> ReflectionTestUtils.invokeMethod(
-                service,
-                "fillAllowanceDay",
-                new com.enpenseSystem.entity.FkReimAllowanceDay(),
-                0L,
-                0L,
-                day
-        )).isInstanceOf(IllegalArgumentException.class)
+        assertThatThrownBy(() -> allowanceCalculator.fillAllowanceDay(new FkReimAllowanceDay(), 0L, 0L, day))
+                .isInstanceOf(IllegalArgumentException.class)
                 .hasMessageContaining("餐补不能超过标准金额100.00");
     }
 
     private void validateAllowanceDays(ReimbursementSaveRequest.ItineraryRequest itinerary,
                                        List<ReimbursementSaveRequest.AllowanceDayRequest> days) {
-        ReflectionTestUtils.invokeMethod(service, "validateAllowanceDaysForItinerary", itinerary, days);
+        allowanceCalculator.validateAllowanceDaysForItinerary(itinerary, days);
     }
 
     private ReimbursementSaveRequest.ItineraryRequest itinerary() {

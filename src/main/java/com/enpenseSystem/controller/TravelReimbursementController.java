@@ -2,10 +2,16 @@ package com.enpenseSystem.controller;
 
 import com.enpenseSystem.common.Result;
 import com.enpenseSystem.dto.AllowanceGenerateRequest;
+import com.enpenseSystem.dto.ReimbursementEditLockRequest;
 import com.enpenseSystem.dto.ReimbursementPageQuery;
 import com.enpenseSystem.dto.ReimbursementSaveRequest;
+import com.enpenseSystem.dto.ReimbursementVersionRequest;
 import com.enpenseSystem.dto.SubmitGroup;
+import com.enpenseSystem.entity.SysUser;
+import com.enpenseSystem.service.ReimbursementEditLockService;
 import com.enpenseSystem.service.ReimbursementService;
+import com.enpenseSystem.service.UserService;
+import jakarta.servlet.http.HttpServletRequest;
 import org.springframework.validation.annotation.Validated;
 import org.springframework.web.bind.annotation.DeleteMapping;
 import org.springframework.web.bind.annotation.GetMapping;
@@ -15,6 +21,7 @@ import org.springframework.web.bind.annotation.PostMapping;
 import org.springframework.web.bind.annotation.PutMapping;
 import org.springframework.web.bind.annotation.RequestBody;
 import org.springframework.web.bind.annotation.RequestMapping;
+import org.springframework.web.bind.annotation.RequestParam;
 import org.springframework.web.bind.annotation.RestController;
 
 /**
@@ -30,9 +37,17 @@ public class TravelReimbursementController {
 
     /** 报销单核心业务服务。 */
     private final ReimbursementService reimbursementService;
+    /** 编辑锁服务，防止多人同时编辑冲突。 */
+    private final ReimbursementEditLockService editLockService;
+    /** 用户服务，获取当前登录用户信息。 */
+    private final UserService userService;
 
-    public TravelReimbursementController(ReimbursementService reimbursementService) {
+    public TravelReimbursementController(ReimbursementService reimbursementService,
+                                          ReimbursementEditLockService editLockService,
+                                          UserService userService) {
         this.reimbursementService = reimbursementService;
+        this.editLockService = editLockService;
+        this.userService = userService;
     }
 
     @GetMapping("/page")
@@ -65,10 +80,12 @@ public class TravelReimbursementController {
         return Result.ok(reimbursementService.update(reimNo, request));
     }
 
-    /** 对数据库中已经存在的草稿执行完整校验并提交。 */
+    /** 对数据库中已经存在的草稿执行完整校验并提交。前端需回传详情接口给出的 version。 */
     @PostMapping("/{reimNo}/submit")
-    public Result submitDraft(@PathVariable String reimNo) {
-        return Result.ok(reimbursementService.submitDraft(reimNo));
+    public Result submitDraft(@PathVariable String reimNo,
+                               @RequestBody(required = false) ReimbursementVersionRequest request) {
+        Integer version = request != null ? request.getVersion() : null;
+        return Result.ok(reimbursementService.submitDraft(reimNo, version));
     }
 
     /** 将任意现有报销单深度复制为一张新的草稿。 */
@@ -95,5 +112,51 @@ public class TravelReimbursementController {
     @PostMapping("/allowance-days/generate")
     public Result generateAllowanceDays(@RequestBody AllowanceGenerateRequest request) {
         return Result.ok(reimbursementService.generateAllowanceDays(request));
+    }
+
+    /** 查询全部城市补助标准。 */
+    @GetMapping("/city-allowances")
+    public Result listCityAllowances() {
+        return Result.ok(reimbursementService.listCityAllowances());
+    }
+
+    /** 查询指定报销人的个人统计。 */
+    @GetMapping("/personal-statistics")
+    public Result personalStatistics(@RequestParam(required = false) String reimburserName,
+                                      @RequestParam(required = false) String reimburserNo) {
+        return Result.ok(reimbursementService.personalStatistics(reimburserName, reimburserNo));
+    }
+
+    // ======================== 编辑锁接口 ========================
+
+    /** 尝试获得报销单编辑锁。只有草稿状态可以加锁。 */
+    @PostMapping("/{reimNo}/lock")
+    public Result tryLock(@PathVariable String reimNo, HttpServletRequest request) {
+        SysUser user = userService.getCurrentUser(request);
+        return Result.ok(editLockService.tryLock(reimNo, user));
+    }
+
+    /** 续期当前用户持有的编辑锁。 */
+    @PutMapping("/{reimNo}/lock")
+    public Result renewLock(@PathVariable String reimNo,
+                             @RequestBody ReimbursementEditLockRequest lockRequest,
+                             HttpServletRequest request) {
+        SysUser user = userService.getCurrentUser(request);
+        return Result.ok(editLockService.renew(reimNo, lockRequest.getLockToken(), user));
+    }
+
+    /** 释放当前用户持有的编辑锁。 */
+    @DeleteMapping("/{reimNo}/lock")
+    public Result unlock(@PathVariable String reimNo,
+                          @RequestBody ReimbursementEditLockRequest lockRequest,
+                          HttpServletRequest request) {
+        SysUser user = userService.getCurrentUser(request);
+        return Result.ok(editLockService.unlock(reimNo, lockRequest.getLockToken(), user));
+    }
+
+    /** 查询报销单当前编辑锁状态（持锁人信息等）。 */
+    @GetMapping("/{reimNo}/lock")
+    public Result getLockInfo(@PathVariable String reimNo) {
+        return Result.ok(editLockService.getLockInfo(reimNo));
     }
 }
