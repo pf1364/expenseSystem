@@ -926,10 +926,24 @@ function splitAllocationsEvenly() {
   syncAllAllocationAmounts()
 }
 
-function syncAllocationAmount(row) {
-  // 分摊金额由补助总额乘比例得到，页面不允许手工修改。
-  row.allocationAmount = Number((totalAmount.value * Number(row.allocationRatio || 0) / 100).toFixed(2))
+function syncAllocationAmount() {
+  // 先计算第2行及以后的分摊金额
+  const otherAmountTotal = form.allocations.slice(1).reduce((sum, item) => {
+    return sum + Number((totalAmount.value * Number(item.allocationRatio || 0) / 100).toFixed(2))
+  }, 0)
+
+  // 第2行及以后按正常公式计算
+  form.allocations.forEach((row, index) => {
+    if (index === 0) {
+      // 第一行作为差额行：总金额 - 其他行金额合计
+      row.allocationAmount = Number((totalAmount.value - otherAmountTotal).toFixed(2))
+    } else {
+      // 其他行按比例计算
+      row.allocationAmount = Number((totalAmount.value * Number(row.allocationRatio || 0) / 100).toFixed(2))
+    }
+  })
 }
+
 
 function syncAllAllocationAmounts() {
   form.allocations.forEach(syncAllocationAmount)
